@@ -7,7 +7,9 @@
 .equ HEADER_BYTES, 96
 .equ NAME_COMPONENT_LIMIT, 64
 .equ NAME_COMPONENT_BYTES, 16
-.equ NAME_STACK_BYTES, NAME_COMPONENT_LIMIT * NAME_COMPONENT_BYTES + 8
+.equ LOOKUP_INDEX, NAME_COMPONENT_LIMIT * NAME_COMPONENT_BYTES
+.equ LOOKUP_FIRST, LOOKUP_INDEX + 8
+.equ NAME_STACK_BYTES, LOOKUP_FIRST + 16
 
 .section .rodata
 .Llean_commit:
@@ -298,6 +300,24 @@ mathlib_olean_import_path:
 # rdi = view, rsi = NUL-terminated name, rdx = result.
 # Returns 1 found, 0 missing, -1 invalid name, -2 invalid cache.
 mathlib_olean_lookup:
+    xor ecx, ecx
+    jmp mathlib_olean_lookup_index
+.size mathlib_olean_lookup, .-mathlib_olean_lookup
+
+.globl mathlib_olean_lookup_index
+.type mathlib_olean_lookup_index,@function
+# Same ABI as lookup with optional index for this view in rcx.
+mathlib_olean_lookup_index:
+    xor r8d, r8d
+    jmp mathlib_olean_lookup_cached
+.size mathlib_olean_lookup_index, .-mathlib_olean_lookup_index
+
+.globl mathlib_olean_lookup_cached
+.hidden mathlib_olean_lookup_cached
+.type mathlib_olean_lookup_cached,@function
+# r8 = nullable, initially zeroed QUERY_BYTES stable storage for this argv.
+# Components borrow the unchanged name text for subsequent module lookups.
+mathlib_olean_lookup_cached:
     push rbp
     push rbx
     push r12
@@ -305,6 +325,7 @@ mathlib_olean_lookup:
     push r14
     push r15
     sub rsp, NAME_STACK_BYTES
+    mov [rsp + LOOKUP_INDEX], rcx
     mov r12, rdi
     mov r13, rdx
     mov qword ptr [r13 + RESULT_KIND], 0
@@ -314,18 +335,45 @@ mathlib_olean_lookup:
 
     mov rdi, rsi
     mov rsi, rsp
+    test r8, r8
+    jz .Lparse_components
+    lea rsi, [r8 + QUERY_COMPONENTS]
+    mov eax, [r8]
+    test eax, eax
+    jnz .Lcomponents_ready
+.Lparse_components:
+    mov r15, rsi
     call .Lparse_query
     test eax, eax
     jz .Lbad_query
+    mov rsi, r15
+    cmp rsi, rsp
+    je .Lcomponents_ready
+    mov [rsi - QUERY_COMPONENTS], eax
+.Lcomponents_ready:
+    mov [rsp + LOOKUP_FIRST], rsi
     mov r14d, eax
     shl r14, 4
+    lea r14, [rsi + r14 - NAME_COMPONENT_BYTES]  # Last component.
     xor ebx, ebx
+    mov r15, [rsp + LOOKUP_INDEX]
+    test r15, r15
+    jz .Lcandidate
+    mov rdi, [r14]
+    mov rsi, [r14 + 8]
+    call mathlib_olean_leaf_hash
+    and eax, [r15 + INDEX_MASK]
+    mov ebx, [r15 + rax*4 + INDEX_HEADS]
+.Lindexed_candidate:
+    test ebx, ebx
+    jz .Lmissing
+    dec ebx
 .Lcandidate:
     cmp rbx, [r12 + VIEW_COUNT]
     jae .Lmissing
     mov rax, [r12 + VIEW_NAMES]
     mov rbp, [rax + rbx * 8]
-    lea r15, [rsp + r14 - NAME_COMPONENT_BYTES]
+    mov r15, r14
 
 .Lcomponent:
     cmp rbp, 1                      # Name.anonymous
@@ -384,7 +432,7 @@ mathlib_olean_lookup:
     cmp rcx, [rax + 16]
     jne .Lnext_candidate
 .Lcomponent_match:
-    cmp r15, rsp
+    cmp r15, [rsp + LOOKUP_FIRST]
     je .Lprefix_end
     sub r15, NAME_COMPONENT_BYTES
     jmp .Lcomponent
@@ -393,6 +441,13 @@ mathlib_olean_lookup:
     je .Lfound
 
 .Lnext_candidate:
+    mov rax, [rsp + LOOKUP_INDEX]
+    test rax, rax
+    jz .Lnext_linear
+    mov rax, [rax + INDEX_LINKS]
+    mov ebx, [rax + rbx*4]
+    jmp .Lindexed_candidate
+.Lnext_linear:
     inc rbx
     jmp .Lcandidate
 
@@ -464,7 +519,7 @@ mathlib_olean_lookup:
     pop rbx
     pop rbp
     ret
-.size mathlib_olean_lookup, . - mathlib_olean_lookup
+.size mathlib_olean_lookup_cached, . - mathlib_olean_lookup_cached
 
 .Lexpr_offset:
     sub rsp, 8

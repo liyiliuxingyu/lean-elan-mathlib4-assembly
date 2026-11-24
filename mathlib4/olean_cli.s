@@ -23,9 +23,11 @@
 .equ S_IFMT, 0xf000
 .equ S_IFREG, 0x8000
 
+.equ OUTPUT_CAPACITY, 16384
 .equ decimal_end, VIEW_BYTES + RESULT_BYTES + 32
 .equ stat_mode, 24
 .equ stat_size, 48
+.equ single_index, 144           # Reuse the stack frame after fstat.
 .equ stack_size, 160
 .equ error_path, stack_size
 .equ error_path_capacity, 4096
@@ -40,6 +42,8 @@ _start:
     mov r13, [rsp]          # Names left after removing program and path.
     sub r13, 2
     jb .Lusage_error
+    cmp r13, 16
+    setae byte ptr [rip + .Lbuffered_output]
     mov rsi, [rsp + 16]
     lea rdi, [rip + .Lrecursive_option]
     mov ecx, OFFSET FLAT:.Lrecursive_option_length
@@ -114,6 +118,7 @@ _start:
     call mathlib_olean_parse
     cmp eax, 1
     jne .Lcache_error
+    mov qword ptr [rsp + single_index], 0
     cmp r13, -1
     jne .Lregular_mode
     mov rdi, rsp
@@ -149,6 +154,10 @@ _start:
 .Lregular_mode:
     test r13, r13
     jz .Lsummary
+    mov rdi, rsp
+    mov rsi, r13
+    call mathlib_olean_index_new
+    mov [rsp + single_index], rax
 
 .Lquery:
     test rbp, rbp
@@ -156,7 +165,8 @@ _start:
     mov rdi, rsp
     mov rsi, [rbx]
     lea rdx, [rsp + VIEW_BYTES]
-    call mathlib_olean_lookup
+    mov rcx, [rsp + single_index]
+    call mathlib_olean_lookup_index
     cmp eax, 1
     je .Lmatch
     test eax, eax
@@ -196,6 +206,10 @@ _start:
     add rbx, 8
     dec r13
     jnz .Lquery
+    test rbp, rbp
+    jnz .Lfinish
+    mov rdi, [rsp + single_index]
+    call mathlib_olean_index_free
     jmp .Lfinish
 
 .Lrecursive:
@@ -366,6 +380,12 @@ _start:
     mov edx, OFFSET FLAT:.Loutput_message_len
 
 .Lreport_error:
+    call .Lflush_buffer
+    test eax, eax
+    jz .Lerror_ready
+    lea rsi, [rip + .Loutput_message]
+    mov edx, OFFSET FLAT:.Loutput_message_len
+.Lerror_ready:
     mov r12d, 2
     mov edi, 2
 .Lwrite_error:
@@ -380,6 +400,9 @@ _start:
     jnz .Lwrite_error
 
 .Lfinish:
+    call .Lflush_buffer
+    test eax, eax
+    jnz .Loutput_error
     test r15, r15
     jz .Lexit
     mov rdi, r15
@@ -416,6 +439,39 @@ _start:
 # Retry short writes and interrupts. Return 0 on success and 1 on failure.
 .type .Lwrite_record, @function
 .Lwrite_record:
+    cmp byte ptr [rip + .Lbuffered_output], 0
+    je .Ldirect_write
+    lea r9, [rsi + rcx + 1]
+    mov rax, [rip + .Lbuffer_used]
+    lea r8, [rax + r9]
+    cmp r8, OUTPUT_CAPACITY
+    jbe .Lcopy_record
+    sub rsp, 8
+    call .Lflush_buffer
+    add rsp, 8
+    test eax, eax
+    jnz .Lrecord_done
+    cmp r9, OUTPUT_CAPACITY         # One very long name still fits the CLI.
+    ja .Ldirect_write
+    xor eax, eax
+.Lcopy_record:
+    lea r8, [rip + .Loutput_buffer]
+    add r8, rax
+    add rax, r9
+    mov [rip + .Lbuffer_used], rax
+    mov r10, rcx
+    mov rcx, rsi
+    mov rsi, rdi
+    mov rdi, r8
+    rep movsb
+    mov rsi, rdx
+    mov rcx, r10
+    rep movsb
+    mov byte ptr [rdi], 10
+    xor eax, eax
+.Lrecord_done:
+    ret
+.Ldirect_write:
     mov r8d, 1
 .Lwrite_record_fd:
     sub rsp, 48
@@ -459,6 +515,50 @@ _start:
     add rsp, 48
     ret
 .size .Lwrite_record, . - .Lwrite_record
+
+# Preserve the pending record or diagnostic across an intervening flush.
+.type .Lflush_buffer,@function
+.Lflush_buffer:
+    xor eax, eax
+    cmp qword ptr [rip + .Lbuffer_used], 0
+    je .Lflush_done
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    lea rsi, [rip + .Loutput_buffer]
+    mov rdx, [rip + .Lbuffer_used]
+    mov qword ptr [rip + .Lbuffer_used], 0
+    mov edi, 1
+.Lflush_write:
+    mov eax, SYS_write
+    syscall
+    cmp rax, -EINTR
+    je .Lflush_write
+    test rax, rax
+    jle .Lflush_failed
+    add rsi, rax
+    sub rdx, rax
+    jnz .Lflush_write
+    xor eax, eax
+    jmp .Lflush_restore
+.Lflush_failed:
+    mov eax, 1
+.Lflush_restore:
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+.Lflush_done:
+    ret
+.size .Lflush_buffer, .-.Lflush_buffer
+
+.section .bss
+.balign 8
+.Lbuffer_used:     .skip 8
+.Lbuffered_output: .skip 1
+.balign 16
+.Loutput_buffer:   .skip OUTPUT_CAPACITY
 
 .section .rodata
 .balign 4

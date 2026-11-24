@@ -137,8 +137,14 @@ mathlib_olean_name_format:
     jz .Lname_error
     cmp word ptr [rax + 4], 32
     jne .Lname_error
-    cmp r13, [rax + 8]
-    je .Lname_error
+    cmp r13, [rax + 8]              # prefixes precede their owning Name
+    jbe .Lname_error
+    mov rdx, [rax + 16]
+    test dl, 1
+    jnz .Lname_payload_ok
+    cmp rdx, r13
+    jae .Lname_error
+.Lname_payload_ok:
     mov r13, [rax + 8]
     cmp word ptr [rax + 6], 0x0202
     je .Lnumerical_name
@@ -359,6 +365,17 @@ mathlib_olean_string_format:
 # view, serialized Nat (boxed immediate or GMP object), output, capacity.
 # Return byte count excluding NUL or -1.
 mathlib_olean_nat_format:
+    xor r9d, r9d
+    jmp .Linteger_format
+.size mathlib_olean_nat_format, .-mathlib_olean_nat_format
+
+.globl mathlib_olean_int_format
+.type mathlib_olean_int_format, @function
+# Same ABI as Nat. Lean 4.19 on x86-64 boxes the unsigned 32-bit bit
+# pattern of a signed int; larger magnitudes use a signed GMP limb count.
+mathlib_olean_int_format:
+    mov r9d, 1
+.Linteger_format:
     push r12
     push r13
     sub rsp, 8
@@ -372,7 +389,7 @@ mathlib_olean_nat_format:
     dec rcx
     mov r13, rcx
     mov byte ptr [r13], 0
-    call .Lprepend_nat
+    call .Lprepend_integer
     test rax, rax
     jz .Lnat_error
     mov rdi, r12
@@ -387,25 +404,40 @@ mathlib_olean_nat_format:
     pop r13
     pop r12
     ret
-.size mathlib_olean_nat_format, .-mathlib_olean_nat_format
+.size mathlib_olean_int_format, .-mathlib_olean_int_format
 
 # Prepend decimal digits right-to-left. rdi=view, rsi=serialized Nat,
 # rdx=beginning, rcx=cursor. New cursor or zero in rax.
 .Lprepend_nat:
+    xor r9d, r9d
+.Lprepend_integer:
     push rbp
     push rbx
     push r12
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 24
     mov rbp, rsp
+    mov byte ptr [rbp], 0          # prepend a minus sign after the digits
+    mov qword ptr [rbp + 8], 0     # byte length of an optional work mapping
     mov r12, rdx
     mov r13, rcx
     test sil, 1
     jz .Lbig_nat
     mov rax, rsi
     shr rax, 1
+    test r9d, r9d
+    jz .Lsmall_magnitude
+    mov rdx, rax
+    shr rdx, 32
+    jnz .Lprepend_nat_bad
+    movsxd rax, eax
+    test rax, rax
+    jns .Lsmall_magnitude
+    neg rax
+    mov byte ptr [rbp], 1
+.Lsmall_magnitude:
     xor r15d, r15d
     jmp .Lnat_digits
 
@@ -420,12 +452,19 @@ mathlib_olean_nat_format:
     jne .Lprepend_nat_bad
     mov r15d, [rax + 12]            # GMP signed limb count
     test r15d, r15d
-    jle .Lprepend_nat_bad
+    jz .Lprepend_nat_bad
+    jns .Lcheck_limb_count
+    test r9d, r9d
+    jz .Lprepend_nat_bad
+    neg r15d
+    jo .Lprepend_nat_bad
+    mov byte ptr [rbp], 1
+.Lcheck_limb_count:
     cmp r15d, [rax + 8]             # pinned compactor writes exact capacity
     jne .Lprepend_nat_bad
     lea r8, [r15 * 8 + 24]
-    cmp r8, 65535
-    ja .Lprepend_nat_bad
+    # The official release stores only the low 16 bits in m_cs_sz.
+    # Validate the full limb count and file extent independently below.
     cmp [rax + 4], r8w
     jne .Lprepend_nat_bad
     mov rax, r14
@@ -450,9 +489,29 @@ mathlib_olean_nat_format:
     ja .Lprepend_nat_bad
     lea rcx, [r15 * 8 + 15]
     and rcx, -16
+    mov r14, rax
+    cmp rcx, 16384
+    ja .Lmap_limbs
     sub rsp, rcx
     mov rdi, rsp
-    lea rsi, [rax + 24]
+    jmp .Lcopy_limbs
+.Lmap_limbs:
+    mov rsi, rcx
+    xor edi, edi
+    mov edx, 3                     # PROT_READ | PROT_WRITE
+    mov r10d, 0x22                 # MAP_PRIVATE | MAP_ANONYMOUS
+    mov r8d, -1
+    xor r9d, r9d
+    mov eax, 9                     # mmap
+    syscall
+    cmp rax, -4095
+    jae .Lprepend_nat_bad
+    mov [rbp + 8], rsi
+    mov [rbp + 16], rax
+    mov rdi, rax
+.Lcopy_limbs:
+    lea rsi, [r14 + 24]
+    mov r14, rdi
     mov rcx, r15
     rep movsq
     movabs rbx, 10000000000000000000
@@ -461,15 +520,15 @@ mathlib_olean_nat_format:
     mov rcx, r15
 .Lnat_divide:
     dec rcx
-    mov rax, [rsp + rcx * 8]
+    mov rax, [r14 + rcx * 8]
     div rbx
-    mov [rsp + rcx * 8], rax
+    mov [r14 + rcx * 8], rax
     test rcx, rcx
     jnz .Lnat_divide
 .Lnat_trim:
     test r15, r15
     jz .Lnat_chunk_digits
-    cmp qword ptr [rsp + r15 * 8 - 8], 0
+    cmp qword ptr [r14 + r15 * 8 - 8], 0
     jne .Lnat_chunk_digits
     dec r15
     jmp .Lnat_trim
@@ -496,13 +555,29 @@ mathlib_olean_nat_format:
 .Lnext_nat_chunk:
     test r15, r15
     jnz .Lnat_chunk
+    cmp byte ptr [rbp], 0
+    je .Linteger_digits_done
+    cmp r13, r12
+    je .Lprepend_nat_bad
+    dec r13
+    mov byte ptr [r13], '-'
+.Linteger_digits_done:
     mov rax, r13
     jmp .Lprepend_nat_done
 .Lprepend_nat_bad:
     xor eax, eax
 .Lprepend_nat_done:
+    mov rsi, [rbp + 8]
+    test rsi, rsi
+    jz .Ldiscard_limb_stack
+    mov r15, rax
+    mov rdi, [rbp + 16]
+    mov eax, 11                    # munmap
+    syscall
+    mov rax, r15
+.Ldiscard_limb_stack:
     mov rsp, rbp
-    add rsp, 8
+    add rsp, 24
     pop r15
     pop r14
     pop r13

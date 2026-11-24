@@ -4,7 +4,7 @@
 `227caca133724d5516bee25c2aeb3e609478f2d8`。实现范围是
 `ToolchainDesc::from_resolved_str` 和 `ToolchainDesc::from_toolchain_dir`。
 绝对路径、链接工具链名、显式远程工具链名、安装目录名的还原均由汇编处理。
-无需 Rust 工具链或 C 运行库。显式工具链启动见 [RUN-PROXY.md](RUN-PROXY.md)。默认与覆盖选择、相对路径解析、远程渠道解析、下载和安装仍待移植。
+无需 Rust 工具链或 C 运行库。显式工具链启动见 [RUN-PROXY.md](RUN-PROXY.md)。命令行、环境、目录覆盖、项目（包括旧式 `leanpkg.toml`）、安装目录和全局默认选择，以及相对路径和固定版本解析见 [SELECTION.md](SELECTION.md)。浮动频道解析、下载和安装仍待移植。
 
 - [固定版本的上游实现与测试](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs)
 - [Elan v4.2.4](https://github.com/leanprover/elan/releases/tag/v4.2.4)

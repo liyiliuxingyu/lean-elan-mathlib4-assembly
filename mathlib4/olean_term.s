@@ -8,7 +8,8 @@
 .equ SYS_mmap, 9
 .equ SYS_munmap, 11
 .equ EINTR, -4
-.equ ROW_BYTES, 16384
+.equ MIN_ROW_BYTES, 16384
+.equ MAX_ROW_BYTES, 0x7fffffff
 .equ ROW_RESERVE, 128
 .equ W_COUNT, 0
 .equ W_HEAD, 8
@@ -16,12 +17,21 @@
 .equ W_SIZE, 24
 .equ W_LEVEL, 32
 .equ W_DIGITS, W_LEVEL + 56
-.equ W_ROW, 96
-.equ W_QUEUE, W_ROW + ROW_BYTES
+.equ W_ROW_START, 96
+.equ W_ROW_LIMIT, 104
+.equ W_QUEUE, 112
 
 .equ NODE_EXPR, 0
 .equ NODE_LEVEL, 1
 .equ NODE_LEVELS, 2
+.equ NODE_METADATA, 3
+.equ NODE_SYNTAX, 4
+.equ NODE_SOURCE_INFO, 5
+.equ NODE_PRERESOLVED, 6
+.equ NODE_SYNTAX_FIELDS, 7
+.equ NODE_SUBSTRING, 8
+.equ NODE_STRING, 9
+.equ NODE_SYNTAX_ARRAY, 10
 
 .macro ELAYOUT tag, bytes, fields, description
     .long .Lexpr_\tag - .Lexpressions
@@ -71,6 +81,24 @@
 .Lmvar:         .asciz "mvar"
 .Lnat:          .asciz "nat"
 .Lstring:       .asciz "string"
+.Lbool:         .asciz "bool"
+.Lname:         .asciz "name"
+.Lint:          .asciz "int"
+.Lsyntax_tag:   .asciz "syntax"
+.Lmetadata_tag: .asciz "metadata"
+.Lentry:        .asciz "entry"
+.align 4
+.Ldata_tags:
+    .long .Lstring - .Ldata_tags, .Lbool - .Ldata_tags
+    .long .Lname - .Ldata_tags, .Lnat - .Ldata_tags
+    .long .Lint - .Ldata_tags, .Lsyntax_tag - .Ldata_tags
+.Lnode_handlers:
+    .long .Lexpression_node - .Lnode_handlers, .Llevel_node - .Lnode_handlers
+    .long .Llevel_list_node - .Lnode_handlers, .Lmetadata_node - .Lnode_handlers
+    .long .Lsyntax_node - .Lnode_handlers, .Lsource_info_node - .Lnode_handlers
+    .long .Lpreresolved_node - .Lnode_handlers, .Lsyntax_fields_node - .Lnode_handlers
+    .long .Lsubstring_node - .Lnode_handlers, .Lsyntax_string_node - .Lnode_handlers
+    .long .Lsyntax_array_node - .Lnode_handlers
 
 .text
 .globl mathlib_olean_dump_term
@@ -95,6 +123,19 @@ mathlib_olean_dump_term:
     # The work map reserves one qword per possible node offset for the
     # queue and one byte per offset for kind-aware deduplication.
     lea rsi, [r8 + r8*8 + W_QUEUE]
+    # A TSV byte escape needs at most four bytes per input byte. Reserve
+    # virtual room on demand for long metadata values and ordinary strings.
+    mov rax, [r12 + VIEW_SIZE]
+    cmp rax, (MAX_ROW_BYTES - 4096) / 4
+    mov edx, MAX_ROW_BYTES
+    ja .Lrow_capacity
+    lea rdx, [rax*4 + 4096]
+    cmp rdx, MIN_ROW_BYTES
+    mov eax, MIN_ROW_BYTES
+    cmovb rdx, rax
+.Lrow_capacity:
+    add rsi, rdx
+    jc .Lno_work
     mov rbp, rsi
     xor edi, edi
     mov edx, 3                   # PROT_READ | PROT_WRITE
@@ -110,6 +151,11 @@ mathlib_olean_dump_term:
     mov rax, [r12 + VIEW_SIZE]
     shr rax, 3
     mov [r13 + W_SLOTS], rax
+    lea rdx, [rax + rax*8 + W_QUEUE]
+    add rdx, r13
+    mov [r13 + W_ROW_START], rdx
+    lea rdx, [r13 + rbp - ROW_RESERVE]
+    mov [r13 + W_ROW_LIMIT], rdx
 
     mov rax, r14
     xor ecx, ecx
@@ -138,13 +184,15 @@ mathlib_olean_dump_term:
     inc qword ptr [r13 + W_HEAD]
     mov r14, [r13 + W_QUEUE + rax*8]
     mov ebx, r14d
-    and ebx, 7
-    and r14, -8
-    cmp ebx, NODE_LEVEL
-    je .Llevel_node
-    cmp ebx, NODE_LEVELS
-    je .Llevel_list_node
+    and ebx, 15
+    shr r14, 4
+    shl r14, 3
+    lea rdx, [rip + .Lnode_handlers]
+    movsxd rax, dword ptr [rdx + rbx*4]
+    add rax, rdx
+    jmp rax
 
+.Lexpression_node:
     mov rax, r14
     mov edx, 8
     call .Loffset_object
@@ -224,18 +272,8 @@ mathlib_olean_dump_term:
     jc .Lbad
     jmp .Lfield_done
 .Lmetadata:
-    xor eax, eax
-    cmp rsi, 1
-    je .Lmetadata_offset
-    mov rdi, r12
-    mov edx, 8
-    call mathlib_olean_object
-    test rax, rax
-    jz .Lbad
-    sub rax, [r12 + VIEW_MAPPING]
-.Lmetadata_offset:
-    call .Lnumber
-    jmp .Lfield_done
+    mov ecx, NODE_METADATA
+    jmp .Lraw_ref
 
 .Lliteral:
     mov rdi, r12
@@ -349,6 +387,136 @@ mathlib_olean_dump_term:
     mov ecx, NODE_LEVELS
     call .Lreference
     jc .Lbad
+    jmp .Lemit
+
+# A serialized KVMap is its List (Name × DataValue). Its pair and value
+# wrappers are inlined into a single row; every pointer points backwards
+# relative to the object containing that particular field.
+.Lmetadata_node:
+    mov rax, r14
+    mov edx, 24
+    call .Loffset_object
+    test rax, rax
+    jz .Lbad
+    cmp dword ptr [rax + 4], 0x01020018
+    jne .Lbad
+    mov rbx, rax                      # List.cons
+    mov rax, r14
+    lea rsi, [rip + .Lmetadata_tag]
+    call .Lrow_header
+    call .Ltab
+    lea rsi, [rip + .Lentry]
+    call .Ltext
+    call .Ltab
+
+    mov rsi, [rbx + 8]
+    mov edx, 24
+    mov rdi, r12
+    call mathlib_olean_object
+    test rax, rax
+    jz .Lbad
+    cmp rax, rbx
+    jae .Lbad
+    cmp dword ptr [rax + 4], 0x00020018    # Prod.mk
+    jne .Lbad
+    mov rbp, rax
+    mov rsi, [rbp + 8]
+    call .Lbefore_value
+    jc .Lbad
+    call .Lformat_args
+    call mathlib_olean_name_format
+    test eax, eax
+    js .Lbad
+    add r15, rax
+    call .Ltab
+
+    mov rsi, [rbp + 16]
+    mov edx, 16
+    mov rdi, r12
+    call mathlib_olean_object
+    test rax, rax
+    jz .Lbad
+    cmp rax, rbp
+    jae .Lbad
+    mov rbp, rax                      # DataValue
+    cmp word ptr [rbp + 4], 16
+    jne .Lbad
+    movzx eax, byte ptr [rbp + 7]
+    cmp eax, 5
+    ja .Lbad
+    lea rsi, [rip + .Ldata_tags]
+    movsxd rdx, dword ptr [rsi + rax*4]
+    add rsi, rdx
+    call .Ltext
+    call .Ltab
+    cmp eax, 1
+    je .Lmetadata_bool
+    cmp byte ptr [rbp + 6], 1
+    jne .Lbad
+    mov rsi, [rbp + 8]
+    call .Lbefore_value
+    jc .Lbad
+    call .Lformat_args
+    test eax, eax
+    jz .Lmeta_string
+    cmp eax, 2
+    je .Lmeta_name
+    cmp eax, 3
+    je .Lmeta_nat
+    cmp eax, 4
+    je .Lmeta_int
+    mov ecx, NODE_SYNTAX
+    call .Lreference
+    jc .Lbad
+    jmp .Lmeta_tail
+.Lmeta_string:
+    call mathlib_olean_string_format
+    jmp .Lmeta_formatted
+.Lmeta_name:
+    call mathlib_olean_name_format
+    jmp .Lmeta_formatted
+.Lmeta_nat:
+    call mathlib_olean_nat_format
+    jmp .Lmeta_formatted
+.Lmeta_int:
+    call mathlib_olean_int_format
+.Lmeta_formatted:
+    test eax, eax
+    js .Lbad
+    add r15, rax
+    jmp .Lmeta_tail
+.Lmetadata_bool:
+    cmp byte ptr [rbp + 6], 0
+    jne .Lbad
+    movzx eax, byte ptr [rbp + 8]
+    cmp eax, 1
+    ja .Lbad
+    call .Lnumber
+.Lmeta_tail:
+    call .Ltab
+    mov rsi, [rbx + 16]
+    mov ecx, NODE_METADATA
+    call .Lreference
+    jc .Lbad
+    jmp .Lemit
+
+# Compare a serialized field against its mapped owner in rbp.
+# Immediate values are checked by their constructor-specific decoder.
+.Lbefore_value:
+    test sil, 1
+    jnz .Lbefore_ok
+    mov rdx, rsi
+    sub rdx, [r12 + VIEW_BASE]
+    jc .Linvalid_carry
+    add rdx, [r12 + VIEW_MAPPING]
+    jc .Linvalid_carry
+    cmp rdx, rbp
+    jae .Linvalid_carry
+.Lbefore_ok:
+    clc
+    ret
+
+.include "olean_term_syntax.inc"
 
 .Lemit:
     call .Lwrite_row
@@ -401,7 +569,10 @@ mathlib_olean_dump_term:
     test r9d, r9d
     jnz .Lseen
     mov [r8 + rdx], cl
-    lea rdx, [rax + rcx - 1]
+    # File offsets need only 61 bits on Linux. Pack a four-bit kind into
+    # the slot index so syntax graph nodes share the existing work queue.
+    shl rdx, 4
+    lea rdx, [rdx + rcx - 1]
     mov r8, [r13 + W_COUNT]
     mov [r13 + W_QUEUE + r8*8], rdx
     inc qword ptr [r13 + W_COUNT]
@@ -486,12 +657,12 @@ mathlib_olean_dump_term:
 .Lformat_args:
     mov rdi, r12
     mov rdx, r15
-    lea rcx, [r13 + W_ROW + ROW_BYTES - ROW_RESERVE]
+    mov rcx, [r13 + W_ROW_LIMIT]
     sub rcx, r15
     ret
 
 .Lrow_header:
-    lea r15, [r13 + W_ROW]
+    mov r15, [r13 + W_ROW_START]
     sub rsp, 8
     call .Ltext
     call .Ltab
@@ -533,7 +704,7 @@ mathlib_olean_dump_term:
 .Lwrite_row:
     mov byte ptr [r15], 10
     inc r15
-    lea rsi, [r13 + W_ROW]
+    mov rsi, [r13 + W_ROW_START]
     mov rdx, r15
     sub rdx, rsi
     mov edi, 1

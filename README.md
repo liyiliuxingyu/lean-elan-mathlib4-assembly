@@ -1,36 +1,58 @@
 # Lean 4、Elan、Mathlib4 汇编移植
 
-这是三个项目的汇编移植源码。目标是 Linux x86-64、ELF 和 System V AMD64 ABI。实现与自测采用 GNU `as` 的 Intel 汇编语法。Makefile 负责组装、链接和运行测试。
+这是三个项目的第五阶段汇编移植源码包。目标是 Linux x86-64、ELF 和 System V AMD64 ABI。实现与自测采用 GNU `as` 的 Intel 汇编语法。Makefile 负责组装、链接和运行测试。
 
 | 项目 | 此版本实现 | 上游基线 |
 | --- | --- | --- |
-| Lean 4 | `hash_str` 和 `src/runtime/utf8.cpp` 的全部 19 个公开符号，覆盖官方 Linux x86-64 发行版 ABI。 | [v4.19.0 · 6caaee842e94](https://github.com/leanprover/lean4/tree/6caaee842e9495688c1567e78c0e68dbb96942aa/src/runtime) |
-| Elan | 解析工具链描述符和目录名，可启动显式选定的本地或已安装工具链中的命令。 | [v4.2.4 · 227caca13372](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs) |
-| Mathlib4 | 将 `Nat.succ_injective` 表示为汇编数据，提供汇编证明检查器和 Lean 证明导出程序。新增独立汇编工具，直接查询编译好的 `.olean` 文件，可沿普通导入遍历模块和导出定理的类型与证明表达式。 | [v4.19.0 · c44e0c8ee63c](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55) |
+| Lean 4 | `hash_str` 和 `src/runtime/utf8.cpp` 的全部 19 个公开符号，另含 8 个 Expr 和 4 个 Level 原生访问器。 | [v4.19.0 · 6caaee842e94](https://github.com/leanprover/lean4/tree/6caaee842e9495688c1567e78c0e68dbb96942aa/src/runtime) |
+| Elan | 解析工具链描述符和目录名，可从参数、环境、项目文件和本机设置选择已安装工具链并启动命令。 | [v4.2.4 · 227caca13372](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs) |
+| Mathlib4 | 将 `Nat.succ_injective` 表示为汇编数据，提供汇编证明检查器和 Lean 证明导出程序。直接查询编译好的 `.olean`，可沿导入遍历、批量索引声明、导出定理的类型、证明和元数据。还能直接列出 `.ltar` 缓存的成员和版本注释。 | [v4.19.0 · c44e0c8ee63c](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55) |
 
 ## 构建与验证
 
-在 Linux x86-64 上安装 GNU Make 和 GNU Binutils 后，从本目录运行。
+在 Linux x86-64 上使用 GNU Make、Binutils 及常见的 POSIX 命令行工具，从本目录运行。
 
 ```sh
 make
 make test
 ```
 
-`make` 生成 `build/lean4/liblean-asm-runtime.a`、`build/elan/elan-asm-descriptor`、`build/elan/elan-asm-run`、`build/mathlib4/export-lean` 和 `build/mathlib4/mathlib-olean`。
+`make` 生成 `build/lean4/liblean-asm-runtime.a`、`build/elan/elan-asm-descriptor`、`build/elan/elan-asm-run`、`build/mathlib4/export-lean`、`build/elan/elan-asm-proxy`、`build/mathlib4/mathlib-olean` 和 `build/mathlib4/mathlib-ltar`。
 
 ```sh
 build/elan/elan-asm-descriptor parse leanprover/lean4:v4.19.0
 build/elan/elan-asm-descriptor dir leanprover--lean4---v4.19.0
 build/elan/elan-asm-run /path/to/lean-4.19.0-linux lean --version
+build/elan/elan-asm-proxy lean +/path/to/lean-4.19.0-linux --version
 build/mathlib4/export-lean
-make test-lean LEAN=/path/to/lean
+make test-upstream LEAN=/path/to/lean-4.19.0-linux/bin/lean
+build/mathlib4/mathlib-ltar --list /path/to/cache.ltar
 build/mathlib4/mathlib-olean --term /path/to/Mathlib/Data/Nat/Basic.olean Nat.succ_injective
 ```
 
-`make test` 运行独立的汇编测试。`make test-lean` 需要官方 Lean v4.19.0。它把证明证书转换为 Lean 源码，再由官方 Lean 检查该命题的证明。证书格式、缓存用法、信任范围和 Elan 的接口约定见子目录说明。
+`make test` 运行独立的汇编测试。`make test-lean` 需要官方 Lean v4.19.0。它把证明证书转换为 Lean 源码，再由官方 Lean 检查该命题的证明。`make test-upstream` 还会用系统链接驱动和官方 Lean 动态库分别链接对照程序，逐行比较 12 个原生访问器的返回值、引用计数及心跳计数。
 
-## 运行时、启动器和证明表达式核验
+## 第五阶段新增能力
+
+- **Lean 4** 的原生访问器处理表达式哈希、变量标志、绑定方式，以及宇宙层级的哈希、深度和参数标志。用官方库对照的 15,360 条测试记录逐字节相同。另在 705 条真实定理上核对了 1,116,728 个返回值。[原生 ABI 与复现命令](lean4/KERNEL-DATA.md)
+- **Elan** 新增 `elan-asm-proxy`。在实际项目目录运行 `elan-asm-proxy lean --version` 即可检查所选工具链。支持目录覆盖、祖先目录中的 `lean-toolchain` 及 `leanpkg.toml`、安装目录和默认工具链。138 次成功启动的标准输出、标准错误与退出状态和官方 Elan 4.2.4 相同。设置格式和选择优先级见[本地工具链选择](elan/SELECTION.md)。
+- **Mathlib4** 的 `--term` 可展开全部六种 `DataValue`，包括嵌套语法、语法位置、共享文本及有符号大整数。从四个真实模块导出的 705 条定理共 117,664 条图记录，与 `Lean.readModuleData` 对照一致，另核对了每条定理的两个根偏移。`mathlib-ltar` 能读取未解包归档的目录和注释。对照了 76 个真实归档的 532 条成员记录。[元数据记录格式](mathlib4/TERM-METADATA.md) · [压缩缓存目录](mathlib4/LTAR.md)
+
+## 第五阶段批量缓存查询耗时
+
+用同一组参数对第四阶段和第五阶段汇编读取器交替计时，预热文件页缓存，计入进程启动、查找以及写出结果的时间。真实文件的正确性由使用官方 Lean 4.19.0 接口的独立程序核对。84 个模块共 17,828 条声明的输出、缺失项和重复查询均通过比较。其中 59 个模块达到了索引门槛，含 17,044 条声明。
+
+| 查询工作量 | 第四阶段中位数 | 第五阶段中位数 |
+| --- | ---: | ---: |
+| `Mathlib.Data.Nat.Init` 全部 502 条声明 | 1.760 ms | 0.433 ms |
+| `Mathlib.Tactic.Linter.FlexibleLinter` 全部 917 条声明 | 7.424 ms | 3.202 ms |
+| `Lean.Meta.Basic` 全部 2,246 条声明 | 26.130 ms | 8.127 ms |
+| 从 `Mathlib.Data.Nat.Basic` 递归查询 130 个混合名称 | 35.515 ms | 35.185 ms |
+| 从同一入口递归查询 128 个均缺失的名称 | 202.318 ms | 54.378 ms |
+
+单文件各计时 31 次，递归各计时 17 次。两组递归查询均访问 1,307 个模块。混合组取 `Mathlib.Data.Nat.Init` 声明表中每四条的第一条，再加入根模块声明、重复的 `Nat.succ` 和一个缺失名。该组中位数接近；明显提速出现在同一文件的大批量查询和持续存在大量缺失名称的递归查询。测试没有计入下载、解压、编译和内核证明检查。
+
+## 第一至四阶段验证记录
 
 - 哈希与固定提交编译出的 C++ 实现逐项比较 18,344 次，覆盖非对齐输入、尾部长度、随机种子和内存页边界。
 - UTF-8 的 11 个入口与官方 Lean 4.19.0 发行版直接对照，覆盖全部 256 个单字节分类和 65,536 种双字节输入，以及固定种子的随机用例。
@@ -69,4 +91,6 @@ build/mathlib4/mathlib-olean --term /path/to/Mathlib/Data/Nat/Basic.olean Nat.su
 
 ## 覆盖范围
 
-Lean 4 的编译器、内核、标准库、Lake 和其余运行时代码待移植。Elan 的默认和目录覆盖选择、远程版本解析、下载、安装、缓存和自更新待移植。Mathlib4 的定理内核复核、声明写入、策略与元程序待移植。汇编证明证书目前使用原型格式。`.olean` 读取器可在固定版本的单个模块及其导入模块中查询声明。完整 Lean 环境构建、内核证明复核和缓存写入仍由上游工具负责。导出的定理记录里，`mdata` 条目的任意元数据按文件偏移保留引用。三个完整上游项目的构建和测试套件未运行。
+当前包中的程序实现、夹具和测试驱动使用 GNU 汇编。Makefile 和构建配方负责编译、链接及运行测试。独立的缓存命令无需安装 Lean。接入官方 Lean 进程时，部分运行时符号仍依赖其内存管理和 C++ ABI；Elan 启动的工具链命令使用所选工具链原有的可执行文件。
+
+Lean 的完整内核、编译器、标准库及 Lake，Elan 的联网下载、安装和自更新，以及 Mathlib4 全部定理和策略的源码移植仍待完成。读取缓存中的证明和元数据后，通用证明类型检查仍由 Lean 内核承担。三个完整上游项目的全套测试尚未运行。

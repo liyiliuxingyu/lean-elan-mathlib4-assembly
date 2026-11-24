@@ -55,8 +55,13 @@
 .Lmodule:
     frozen_header 0, 5, 48
     file_pointer .Lempty_array
-    file_pointer .Lnames
-    file_pointer .Lconstants
+    .ifdef BULK_FIXTURE
+        file_pointer .Lbulk_names_header
+        file_pointer .Lbulk_constants_header
+    .else
+        file_pointer .Lnames
+        file_pointer .Lconstants
+    .endif
     file_pointer .Lempty_array
     file_pointer .Lempty_array
 
@@ -115,6 +120,29 @@
 .Ldefinition:
     frozen_header 1, 1, 16
     file_pointer .Lconstant_val
+# Same terminal component, different prefixes, plus a duplicate with a
+# different record kind to verify that the lowest declaration index wins.
+    string_name .Lname_short, , .Lstring_succ
+.Lbulk_names_header:
+    frozen_header 246, 0, 1
+    .quad 64, 64
+.Lbulk_names:
+    file_pointer .Lname_short
+    file_pointer .Lname_succ
+    file_pointer .Lname_dot
+    file_pointer .Lname_num
+    .rept 60
+        file_pointer .Lname_succ
+    .endr
+.Lbulk_constants_header:
+    frozen_header 246, 0, 1
+    .quad 64, 64
+.Lbulk_constants:
+    file_pointer .Ldefinition
+    file_pointer .Ltheorem
+    .rept 62
+        file_pointer .Ldefinition
+    .endr
 .Limage_end:
 .equ fixture_size, .Limage_end - .Limage
 
@@ -157,6 +185,17 @@
     lea rsi, [rip + \name]
     lea rdx, [rip + .Lresult]
     call mathlib_olean_lookup
+    cmp eax, \expected
+    jne .Lfailed
+.endm
+
+.macro lookup_index name, expected
+    inc r12d
+    lea rdi, [rip + .Lview]
+    lea rsi, [rip + \name]
+    lea rdx, [rip + .Lresult]
+    mov rcx, r14
+    call mathlib_olean_lookup_index
     cmp eax, \expected
     jne .Lfailed
 .endm
@@ -236,6 +275,43 @@ _start:
     lookup .Lsucc_query, -2
     xor QWORD PTR [rip + .Ltheorem_val + 16], 1
     lookup .Lsucc_query, 1
+
+    lea rdi, [rip + .Lview]
+    lea rax, [rip + .Lbulk_names]
+    mov [rdi + VIEW_NAMES], rax
+    lea rax, [rip + .Lbulk_constants]
+    mov [rdi + VIEW_CONSTANTS], rax
+    mov qword ptr [rdi + VIEW_COUNT], 64
+    mov esi, 16
+    call mathlib_olean_index_new
+    mov r14, rax
+    test r14, r14
+    jz .Lfailed
+    lookup_index .Lsucc_query, 1
+    cmp qword ptr [rip + .Lresult + RESULT_KIND], 2
+    jne .Lfailed
+    lookup_index .Lleaf_only, 1
+    cmp qword ptr [rip + .Lresult + RESULT_KIND], 1
+    jne .Lfailed
+    lookup_index .Lwrong_prefix, 0
+    lookup_index .Lnumeric_query, 1
+    lookup_index .Lquoted_number, 0
+    lookup_index .Lquoted_query, 1
+    lookup_index .Lunquoted_query, 0
+    lookup_index .Loverflow_number, -1
+    mov rdi, r14
+    call mathlib_olean_index_free
+
+    # A broken later leaf should not suppress an earlier valid hit. If
+    # indexing cannot inspect all leaves, ordinary demand-driven lookup wins.
+    xor qword ptr [rip + .Lbulk_names + 63*8], 1
+    lea rdi, [rip + .Lview]
+    mov esi, 16
+    call mathlib_olean_index_new
+    test rax, rax
+    jnz .Lfailed
+    lookup .Lsucc_query, 1
+    lookup .Lwrong_case, -2
 
     xor edi, edi
     jmp .Lexit

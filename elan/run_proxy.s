@@ -20,19 +20,38 @@
 .equ ENV_PATH, 2
 .equ ENV_RECURSION, 3
 .equ ENV_TOOLCHAIN, 4
-.equ ENV_SLOTS, 5
+.equ ENV_NO_NOTICE, 5
+.equ ENV_SLOTS, 6
 
 .section .text
 .globl _start
 .type _start, @function
 _start:
     mov     rax, [rsp]
-    cmp     rax, 3
-    jb      .Lusage
     lea     r13, [rsp+8]             /* argv */
     lea     r14, [r13+rax*8+8]      /* envp */
-    mov     r12, [r13+8]            /* resolved descriptor */
-    mov     r15, [r13+16]           /* executable basename */
+.ifdef AUTO_SELECT
+    cmp     rax, 2
+    jb      .Lusage
+    add     r13, 8                   /* slot for child argv[0] */
+    mov     r15, [r13]               /* actual command basename */
+    xor     r12d, r12d               /* optional +toolchain */
+    mov     rsi, [r13+8]
+    test    rsi, rsi
+    jz      .Lproxy_environment
+    cmp     byte ptr [rsi], '+'
+    jne     .Lproxy_environment
+    lea     r12, [rsi+1]
+    add     r13, 8                   /* consume only the first child argument */
+.Lproxy_environment:
+    and     rsp, -16
+    jmp     .Lcollect_environment
+.else
+    cmp     rax, 3
+    jb      .Lusage
+    mov     r12, [r13+8]             /* resolved descriptor */
+    add     r13, 16                  /* slot for child argv[0] */
+    mov     r15, [r13]               /* executable basename */
     and     rsp, -16
 
     mov     rdi, r12
@@ -51,6 +70,7 @@ _start:
     cmp     word ptr [r12+1], '.'
     je      .Linvalid_toolchain
 
+.endif
 .Lvalidate_command:
     cmp     byte ptr [r15], 0
     je      .Linvalid_command
@@ -65,7 +85,11 @@ _start:
 .Lscan_command_byte:
     mov     al, [r15+rcx]
     test    al, al
+.ifdef AUTO_SELECT
+    jz      .Lbuild_program
+.else
     jz      .Lcollect_environment
+.endif
     cmp     al, '/'
     je      .Linvalid_command
     test    rcx, rcx
@@ -130,11 +154,24 @@ _start:
 .Lhome_suffix:
     jc      .Ltoo_long
     test    r8d, r8d
-    jz      .Lbuild_program
+    jz      .Lhome_ready
     lea     rsi, [rip+.Ldot_elan]
     call    .Ljoin_component
     jc      .Ltoo_long
 
+.Lhome_ready:
+.ifdef AUTO_SELECT
+    mov     rdi, r12
+    mov     rsi, [rip+.Lenv_values+ENV_TOOLCHAIN*8]
+    lea     rdx, [rip+.Lhome]
+    mov     rcx, [rip+.Lenv_values+ENV_NO_NOTICE*8]
+    call    elan_select_installed
+    test    rax, rax
+    jz      .Lreport_usage           /* rsi, rdx carry selection diagnostic */
+    mov     r12, rax
+    mov     [rip+.Ldesc], edx
+    jmp     .Lvalidate_command
+.endif
 .Lbuild_program:
     lea     rdi, [rip+.Lprogram]
     lea     rdx, [rip+.Lprogram+PATH_CAPACITY]
@@ -285,7 +322,7 @@ _start:
 .Lcopy_or_skip:
     cmp     eax, ENV_ELAN_HOME
     jb      .Lkeep_env
-    cmp     eax, ENV_SLOTS
+    cmp     eax, ENV_TOOLCHAIN+1
     jb      .Ladvance_env
 .Lkeep_env:
     mov     rax, [r14]
@@ -311,7 +348,7 @@ _start:
     mov     qword ptr [rbx], 0
 
     lea     rdi, [rip+.Lprogram]
-    lea     rsi, [r13+16]           /* replace argv[2]; arguments start at 3 */
+    mov     rsi, r13                /* replace command/selector slot with argv[0] */
     mov     [rsi], rdi
     mov     rdx, r12
     mov     eax, SYS_EXECVE
@@ -381,6 +418,14 @@ _start:
     mov     eax, SYS_EXIT
     syscall
 .size _start, .-_start
+
+.ifdef AUTO_SELECT
+/* Shared bounded path/string operations used by the selection front end. */
+.globl elan_strlen, elan_join_component, elan_append_z
+.set elan_strlen, .Lstrlen
+.set elan_join_component, .Ljoin_component
+.set elan_append_z, .Lappend_z
+.endif
 
 /* rdi = NUL-terminated input; rax = length. */
 .Lstrlen:
@@ -485,6 +530,7 @@ ASCIZ .Lkey_elan_home, "ELAN_HOME="
 ASCIZ .Lkey_path, "PATH="
 ASCIZ .Lkey_recursion, "LEAN_RECURSION_COUNT="
 ASCIZ .Lkey_toolchain, "ELAN_TOOLCHAIN="
+ASCIZ .Lkey_no_notice, "ELAN_NO_OVERRIDE_NOTICE="
 
 .balign 8
 .Lkeys:
@@ -493,17 +539,29 @@ ASCIZ .Lkey_toolchain, "ELAN_TOOLCHAIN="
 .quad .Lkey_path, .Lkey_path_len
 .quad .Lkey_recursion, .Lkey_recursion_len
 .quad .Lkey_toolchain, .Lkey_toolchain_len
+.quad .Lkey_no_notice, .Lkey_no_notice_len
 
+.ifdef AUTO_SELECT
+ASCIZ .Lusage_error, "usage: elan-asm-proxy COMMAND [+TOOLCHAIN] [ARG ...]\n"
+.else
 ASCIZ .Lusage_error, "usage: elan-asm-run TOOLCHAIN COMMAND [ARG ...]\n"
-ASCIZ .Ldescriptor_error, "elan-asm-run: expected a resolved toolchain descriptor\n"
-ASCIZ .Lcommand_error, "elan-asm-run: expected an executable basename inside bin\n"
-ASCIZ .Lhome_error, "elan-asm-run: set ELAN_HOME or HOME\n"
-ASCIZ .Lcwd_error, "elan-asm-run: cannot resolve a relative home directory\n"
-ASCIZ .Lrecursion_error, "elan-asm-run: toolchain launcher recursion limit exceeded\n"
-ASCIZ .Llength_error, "elan-asm-run: path or child environment entry is too long\n"
-ASCIZ .Lmemory_error, "elan-asm-run: cannot allocate the child environment\n"
-ASCIZ .Lmissing_error, "elan-asm-run: installed toolchain executable not found\n"
-ASCIZ .Lexec_error, "elan-asm-run: cannot execute the selected toolchain binary\n"
+.endif
+.macro LAUNCH_ERROR label, value
+.ifdef AUTO_SELECT
+ASCIZ \label, "elan-asm-proxy: \value\n"
+.else
+ASCIZ \label, "elan-asm-run: \value\n"
+.endif
+.endm
+LAUNCH_ERROR .Ldescriptor_error, "expected a resolved toolchain descriptor"
+LAUNCH_ERROR .Lcommand_error, "expected an executable basename inside bin"
+LAUNCH_ERROR .Lhome_error, "set ELAN_HOME or HOME"
+LAUNCH_ERROR .Lcwd_error, "cannot resolve a relative home directory"
+LAUNCH_ERROR .Lrecursion_error, "toolchain launcher recursion limit exceeded"
+LAUNCH_ERROR .Llength_error, "path or child environment entry is too long"
+LAUNCH_ERROR .Lmemory_error, "cannot allocate the child environment"
+LAUNCH_ERROR .Lmissing_error, "installed toolchain executable not found"
+LAUNCH_ERROR .Lexec_error, "cannot execute the selected toolchain binary"
 
 .section .data
 .Lrecursion_env:

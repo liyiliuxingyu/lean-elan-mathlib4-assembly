@@ -14,3 +14,13 @@
 .equ RESULT_TYPE, 16
 .equ RESULT_PROOF, 24
 .equ RESULT_BYTES, 32
+
+# Ephemeral per-module index. Buckets and links contain one-based array indices.
+.equ INDEX_SIZE, 0
+.equ INDEX_MASK, 8
+.equ INDEX_LINKS, 16
+.equ INDEX_HEADS, 24
+
+# Count followed by up to 64 pairs {component pointer or boxed Nat, length}.
+.equ QUERY_COMPONENTS, 8
+.equ QUERY_BYTES, QUERY_COMPONENTS + 64 * 16

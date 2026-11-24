@@ -26,7 +26,7 @@
 
 # Work mapping: book-keeping, one module view, I/O buffers, and a queue.
 .equ G_SEARCH_PATH,       0
-.equ G_ARGC,              8
+.equ G_WORK_SIZE,         8
 .equ G_ARGV,             16
 .equ G_ANSWERS,          24
 .equ G_REMAINING,        32
@@ -40,11 +40,14 @@
 .equ G_ROOT_INO,         96
 .equ G_ACTIVE_PATH,     104
 .equ G_ERROR_BUFFER,    112
-.equ G_VIEW,            120
+.equ G_QUERY_PLANS,     120
+.equ G_VIEW,            128
 .equ G_RESULT,          G_VIEW + VIEW_BYTES
-.equ G_STAT,            G_RESULT + RESULT_BYTES
+.equ G_INDEX,           G_RESULT + RESULT_BYTES
+.equ G_STAT,            G_INDEX + 8
 .equ G_RESOLVER,        G_STAT + 144
-.equ G_IMPORT_PATH,     G_RESOLVER + 64
+.equ PACKAGE_BUCKETS,   64
+.equ G_IMPORT_PATH,     G_RESOLVER + PACKAGE_BUCKETS * 64
 .equ G_FILE_PATH,       G_IMPORT_PATH + PATH_BYTES
 .equ G_QUEUE,           G_FILE_PATH + PATH_BYTES
 .equ G_TABLE,           G_QUEUE + MAX_MODULES * 8
@@ -81,7 +84,17 @@ mathlib_olean_search_graph:
     test r15, r15
     jz .Lno_queries
     xor edi, edi
-    mov esi, G_WORK_BYTES
+    # Append links for unresolved queries. For up to 8192 arguments keep
+    # reusable parsed names as well, bounding the optional reservation.
+    mov rax, r15
+    shr rax, 60
+    jnz .Lno_workspace
+    lea rsi, [r15*8 + G_WORK_BYTES + 8]
+    cmp r15, 8192
+    ja .Lwork_size_ready
+    imul rax, r15, QUERY_BYTES
+    add rsi, rax
+.Lwork_size_ready:
     mov edx, PROT_READ | PROT_WRITE
     mov r10d, MAP_PRIVATE | MAP_ANONYMOUS
     mov r8d, -1
@@ -91,8 +104,20 @@ mathlib_olean_search_graph:
     cmp rax, -4095
     jae .Lno_workspace
     mov r12, rax
+    mov [r12 + G_WORK_SIZE], rsi
+    lea rcx, [r12 + G_WORK_BYTES]
+    xor eax, eax
+.Linit_links:
+    inc rax
+    mov [rcx + rax*8 - 8], rax     # each link holds a one-based argv index
+    cmp rax, r15
+    jb .Linit_links
+    cmp r15, 8192
+    ja .Lplans_ready
+    lea rax, [rcx + r15*8 + 8]
+    mov [r12 + G_QUERY_PLANS], rax
+.Lplans_ready:
     mov [r12 + G_SEARCH_PATH], r14
-    mov [r12 + G_ARGC], r15
     mov [r12 + G_REMAINING], r15
     mov [r12 + G_ARGV], rbp
     mov [r12 + G_ANSWERS], rbx
@@ -108,31 +133,44 @@ mathlib_olean_search_graph:
     js .Lfinish
 
 .Lsearch_module:
-    xor ebx, ebx
+    lea rdi, [r12 + G_VIEW]
+    mov rsi, [r12 + G_REMAINING]
+    call mathlib_olean_index_new
+    mov [r12 + G_INDEX], rax
+    lea r13, [r12 + G_WORK_BYTES]    # address of link to current query
 .Lquery:
-    cmp rbx, [r12 + G_ARGC]
-    jae .Lmodule_imports
-    mov r8, [r12 + G_ANSWERS]
-    cmp byte ptr [r8 + rbx], 0
-    jne .Lnext_query
-
+    mov rbx, [r13]
+    test rbx, rbx
+    jz .Lmodule_imports
+    lea r14, [r12 + rbx*8 + G_WORK_BYTES] # address of its successor link
+    dec rbx
+    mov r8, [r12 + G_QUERY_PLANS]
+    test r8, r8
+    jz .Llookup
+    imul rax, rbx, QUERY_BYTES
+    add r8, rax
+.Llookup:
     lea rdi, [r12 + G_VIEW]
     mov rsi, [r12 + G_ARGV]
-    mov rsi, [rsi + rbx * 8]
+    mov rsi, [rsi + rbx*8]
     lea rdx, [r12 + G_RESULT]
-    call mathlib_olean_lookup
+    mov rcx, [r12 + G_INDEX]
+    call mathlib_olean_lookup_cached
     test eax, eax
     js .Lfinish
-    jz .Lnext_query
+    jnz .Lfound_query
+    mov r13, r14
+    jmp .Lquery
+.Lfound_query:
     mov eax, [r12 + G_RESULT + RESULT_KIND]
     inc eax
     mov r8, [r12 + G_ANSWERS]
     mov [r8 + rbx], al
+    mov rax, [r14]
+    mov [r13], rax                  # unlink only this resolved query
     dec qword ptr [r12 + G_REMAINING]
-    jz .Lsuccess
-.Lnext_query:
-    inc rbx
-    jmp .Lquery
+    jnz .Lquery
+    jmp .Lsuccess
 
 .Lmodule_imports:
     xor r13d, r13d
@@ -173,7 +211,25 @@ mathlib_olean_search_graph:
     mov rdi, [r12 + G_SEARCH_PATH]
     mov rsi, r14
     lea rdx, [r12 + G_FILE_PATH]
-    lea rcx, [r12 + G_RESOLVER]
+    # A package still needs to win Lean's ordered root search the first
+    # time it is seen. Keep successful roots across interleaved packages.
+    # resolve compares the whole package on a hit, including collisions.
+    mov rcx, r14
+    mov eax, 0x811c9dc5
+.Lpackage_byte:
+    movzx r8d, byte ptr [rcx]
+    test r8b, r8b
+    jz .Lpackage_slot
+    cmp r8b, '/'
+    je .Lpackage_slot
+    xor eax, r8d
+    imul eax, eax, 0x01000193
+    inc rcx
+    jmp .Lpackage_byte
+.Lpackage_slot:
+    and eax, PACKAGE_BUCKETS - 1
+    shl eax, 6
+    lea rcx, [r12 + rax + G_RESOLVER]
     call mathlib_olean_resolve
     test eax, eax
     js .Lworkspace_error
@@ -213,7 +269,7 @@ mathlib_olean_search_graph:
 .Lcleanup:
     call .Lunmap_file
     mov rdi, r12
-    mov esi, G_WORK_BYTES
+    mov rsi, [r12 + G_WORK_SIZE]
     mov eax, SYS_munmap
     syscall
     mov eax, ebx
@@ -351,7 +407,9 @@ mathlib_olean_search_graph:
     syscall
     mov qword ptr [r12 + G_MAPPING], 0
 .Lunmap_done:
-    ret
+    mov rdi, [r12 + G_INDEX]
+    mov qword ptr [r12 + G_INDEX], 0
+    jmp mathlib_olean_index_free
 
 # Insert an imported file name only once. Queue entries and hash keys share
 # the same NUL-terminated copy. rdi = name, esi = length (excluding NUL).

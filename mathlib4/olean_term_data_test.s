@@ -64,6 +64,15 @@ LEAN_STRING .Ldotted, "n.a"
     .byte 2, 3
     .quad PREFERRED + .Lsuccessor - .Limage
     .quad PREFERRED + .Lparam - .Limage, 0
+.Llarge_mpz:
+    .long 0
+    .word 32                       # 65568 bytes, modulo 2^16
+    .byte 0, 250
+    .long 8193, -8193
+    .quad PREFERRED + .Llarge_limbs - .Limage
+.Llarge_limbs:
+    .zero 65536
+    .quad 1                        # -(2^524288)
 .Limage_end:
 
 .balign 8
@@ -77,6 +86,12 @@ LEAN_STRING .Ldotted, "n.a"
 .Lsmall:
     .asciz "9223372036854775807"
 .Lsmall_end:
+.Lint_min:
+    .asciz "-2147483648"
+.Lint_min_end:
+.Lint_max:
+    .asciz "2147483647"
+.Lint_max_end:
 .Lname:
     .byte 0xc2, 0xab
     .ascii "n.a"
@@ -95,6 +110,10 @@ LEAN_STRING .Ldotted, "n.a"
     .quad .Ldecimal, .Ldecimal_end - .Ldecimal
     .quad mathlib_olean_nat_format, -1
     .quad .Lsmall, .Lsmall_end - .Lsmall
+    .quad mathlib_olean_int_format, 0x100000001   # boxed INT32_MIN
+    .quad .Lint_min, .Lint_min_end - .Lint_min
+    .quad mathlib_olean_int_format, 0xffffffff    # boxed INT32_MAX
+    .quad .Lint_max, .Lint_max_end - .Lint_max
     .quad mathlib_olean_name_format, PREFERRED + .Lnumeric_name - .Limage
     .quad .Lname, .Lname_end - .Lname
     .quad mathlib_olean_string_format, PREFERRED + .Lcontrol - .Limage
@@ -110,7 +129,7 @@ LEAN_STRING .Ldotted, "n.a"
 .bss
 .balign 8
 .Loutput:
-    .zero 128
+    .zero 157829
 
 .text
 .globl _start
@@ -148,6 +167,41 @@ _start:
     add r12, 32
     cmp r12, r13
     jne .Lformat_case
+
+    lea rdi, [rip + .Lview]
+    movabs rsi, 0x200000001        # invalid: 33 bits of immediate Int payload
+    mov rdx, r14
+    mov ecx, 128
+    call mathlib_olean_int_format
+    cmp eax, -1
+    jne .Lfailed
+    inc ebx
+
+    # This magnitude exceeds the 16-bit compact size field. Compare every
+    # decimal digit via its independently computed FNV-1a checksum.
+    lea rdi, [rip + .Lview]
+    movabs rsi, PREFERRED + .Llarge_mpz - .Limage
+    mov rdx, r14
+    mov ecx, 157829
+    call mathlib_olean_int_format
+    cmp eax, 157828
+    jne .Lfailed
+    cmp byte ptr [r14 + rax], 0
+    jne .Lfailed
+    mov ecx, eax
+    mov rsi, r14
+    movabs rax, 0xcbf29ce484222325
+    movabs rdx, 0x100000001b3
+.Lhash_digit:
+    xor al, [rsi]
+    imul rax, rdx
+    inc rsi
+    dec ecx
+    jnz .Lhash_digit
+    movabs rdx, 0x2fc5176b706f824d
+    cmp rax, rdx
+    jne .Lfailed
+    inc ebx
 
     lea r12, [rip + .Llevels]
     lea r13, [rip + .Llevels_end]

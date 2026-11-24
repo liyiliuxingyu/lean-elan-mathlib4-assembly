@@ -27,3 +27,26 @@ make -C mathlib4 test-lean LEAN=/path/to/lean
 ```
 
 第一条命令运行 16 个汇编测试，覆盖有效证书、交换等式、边界、非法编码和错误目标。第二条命令先用 `export_lean.s` 汇编出的程序核对证书，再根据它的步骤生成 Lean 证明项并调用 Lean 检验。已用 Lean `v4.19.0` 验证生成的声明。这里的检查器只覆盖上述自然数等式格式，Lean 核心仍用于独立复核导出的证明项。
+
+## 直接查询 `.olean` 缓存
+
+`mathlib-olean` 在 Linux x86-64 上直接只读映射本地 `.olean`。它把文件里的虚拟地址换算成文件偏移，读取模块声明名和声明记录，用一个映射处理同一模块的多次查询。构建及查询都只需 GNU 汇编工具和 Linux，查询时无需启动 Lean 或 Lake。支持 Lean 4.19.0 官方 Linux x86-64 发行版生成的缓存，文件格式、GMP 标志和 Lean 提交必须匹配。[Lean 的缓存头格式](https://github.com/leanprover/lean4/blob/6caaee842e9495688c1567e78c0e68dbb96942aa/src/library/module.cpp) · [模块数据定义](https://github.com/leanprover/lean4/blob/6caaee842e9495688c1567e78c0e68dbb96942aa/src/Lean/Environment.lean#L125)
+
+已有解包缓存时，从本工程根目录构建并查询。
+
+```sh
+make
+build/mathlib4/mathlib-olean /path/to/Mathlib/Data/Nat/Basic.olean Nat.succ_injective
+```
+
+该命令返回 `theorem` 和 `Nat.succ_injective`，两者用制表符分隔。给出多个声明名时依次返回结果。不带声明名时显示当前模块的声明数和直接导入数。状态码 `0` 表示成功，`1` 表示至少一个声明在当前模块中缺失，`2` 表示参数、输入缓存或 I/O 出错。声明名区分大小写，支持点分隔、`«…»` 转义和 63 位非负数字分量，最多 64 个分量。查询只查当前模块的声明表，导入的声明需查询其所在模块。
+
+如需获取缓存，在上游 mathlib4 `v4.19.0` 仓库中使用对应 Lean 工具链运行下列命令。解包后的目标位于 `.lake/build/lib/lean/Mathlib/Data/Nat/Basic.olean`。[上游缓存命令](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Cache/Main.lean)
+
+```sh
+lake exe cache get Mathlib/Data/Nat/Basic.lean
+```
+
+`olean_read.s` 提供 SysV 接口 `mathlib_olean_parse(buf, size, view)` 和 `mathlib_olean_lookup(view, name, result)`。地址、计数和返回结构见 `olean_layout.inc`。`parse` 返回 `1` 或 `0`。`lookup` 返回 `1`、`0`、`-1` 或 `-2`，分别对应命中、缺失、名称格式错误和访问到的缓存结构损坏。命中时返回记录偏移和声明种类，定理另返回类型与证明根节点的文件偏移。该接口读取已访问的记录，完整对象图的加载、内核证明检查以及缓存写入仍由上游工具处理。调用期间应保持缓存文件内容稳定。
+
+`make -C mathlib4 test-cache` 运行独立的汇编测试，覆盖格式检查、数组边界、精确名称匹配及类型和证明根偏移。真实缓存和性能核验记录见根目录说明。

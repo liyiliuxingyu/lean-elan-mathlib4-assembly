@@ -39,7 +39,7 @@ make
 build/mathlib4/mathlib-olean /path/to/Mathlib/Data/Nat/Basic.olean Nat.succ_injective
 ```
 
-该命令返回 `theorem` 和 `Nat.succ_injective`，两者用制表符分隔。给出多个声明名时依次返回结果。不带声明名时显示当前模块的声明数和直接导入数。状态码 `0` 表示成功，`1` 表示至少一个声明在当前模块中缺失，`2` 表示参数、输入缓存或 I/O 出错。声明名区分大小写，支持点分隔、`«…»` 转义和 63 位非负数字分量，最多 64 个分量。查询只查当前模块的声明表，导入的声明需查询其所在模块。
+该命令返回 `theorem` 和 `Nat.succ_injective`，两者用制表符分隔。给出多个声明名时依次返回结果。不带声明名时显示当前模块的声明数和直接导入数。状态码 `0` 表示成功，`1` 表示至少一个声明在当前模块中缺失，`2` 表示参数、输入缓存或 I/O 出错。声明名区分大小写，支持点分隔、`«…»` 转义和 63 位非负数字分量，最多 64 个分量。默认模式只查当前文件的声明表。
 
 如需获取缓存，在上游 mathlib4 `v4.19.0` 仓库中使用对应 Lean 工具链运行下列命令。解包后的目标位于 `.lake/build/lib/lean/Mathlib/Data/Nat/Basic.olean`。[上游缓存命令](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Cache/Main.lean)
 
@@ -50,3 +50,19 @@ lake exe cache get Mathlib/Data/Nat/Basic.lean
 `olean_read.s` 提供 SysV 接口 `mathlib_olean_parse(buf, size, view)` 和 `mathlib_olean_lookup(view, name, result)`。地址、计数和返回结构见 `olean_layout.inc`。`parse` 返回 `1` 或 `0`。`lookup` 返回 `1`、`0`、`-1` 或 `-2`，分别对应命中、缺失、名称格式错误和访问到的缓存结构损坏。命中时返回记录偏移和声明种类，定理另返回类型与证明根节点的文件偏移。该接口读取已访问的记录，完整对象图的加载、内核证明检查以及缓存写入仍由上游工具处理。调用期间应保持缓存文件内容稳定。
 
 `make -C mathlib4 test-cache` 运行独立的汇编测试，覆盖格式检查、数组边界、精确名称匹配及类型和证明根偏移。真实缓存和性能核验记录见根目录说明。
+
+## 沿导入关系查询
+
+在上游 Mathlib4 v4.19.0 仓库中运行下列命令。把读取器的路径替换为实际构建路径。配套 Lake 会为查询设置包含依赖和 Lean 标准库的 `LEAN_PATH`。
+
+```sh
+lake env /path/to/build/mathlib4/mathlib-olean --recursive \
+  .lake/build/lib/lean/Mathlib/Data/Nat/Basic.olean \
+  Nat.succ_injective Nat.succ Function.Injective Eq.rec
+```
+
+`--recursive` 要求至少一个声明名。读取器从指定文件开始，按广度优先遍历普通导入，跳过标为 `runtimeOnly` 的导入。待访问的模块名只入队一次，每次只映射当前模块，全部查询命中后停止。查询结果保持参数顺序。命中为制表符分隔的种类和名称，完成遍历后仍缺失的声明返回 `missing` 和退出状态 `1`。如果查询过程遇到缺失或无法读取的缓存，命令会显示相应路径并返回 `2`。在结果已全部找到时，尚未访问的模块无需读取。
+
+也可直接设置冒号分隔的 `LEAN_PATH`。包根选择遵循 Lean 4.19.0 的规则，搜索路径中第一个包含顶级包目录或该包 `.olean` 的条目决定后续模块的位置，空条目表示当前目录。手动设置时，标准库所在的 `$(lean --print-prefix)/lib/lean` 也应在列表内。查询不会构建 Lean 环境，内核证明检查仍由官方 Lean 完成。[Lean 搜索路径](https://github.com/leanprover/lean4/blob/6caaee842e9495688c1567e78c0e68dbb96942aa/src/Lean/Util/Path.lean#L46)
+
+`make -C mathlib4 test-cache` 同时测试单文件数据读取和递归查询。递归测试包含共享叶节点、缺失的仅运行时导入、包路径优先级和提前命中。实现上限为 65,536 个排队模块、16 MiB 模块路径数据和 4,095 字节单路径。当前可读版本为官方 Linux x86-64 Lean 4.19.0 发行版生成的缓存。

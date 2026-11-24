@@ -64,6 +64,8 @@ mathlib_olean_parse:
     test rax, rax
     jz .Lbad_view
     mov [rdi + VIEW_IMPORTS], r10
+    add rax, 24
+    mov [rdi + VIEW_IMPORT_DATA], rax
 
     mov rax, [r12 + 16]
     call .Larray
@@ -134,6 +136,152 @@ mathlib_olean_parse:
     cmp r10, rcx
     ja .Lbad_pointer
     ret
+
+.globl mathlib_olean_import_path
+.type mathlib_olean_import_path, @function
+# rdi = view, rsi = import index, rdx = output buffer, rcx = capacity.
+# Returns length excluding NUL, -1 for index/capacity, -2 for malformed
+# metadata, or -3 for a runtime-only import. Output is defined on success.
+mathlib_olean_import_path:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r12, rdi
+    mov r13, rdx
+    mov r15, rdx
+    add r15, rcx
+    jc .Limport_capacity
+    cmp rsi, [rdi + VIEW_IMPORTS]
+    jae .Limport_capacity
+    mov rax, [rdi + VIEW_IMPORT_DATA]
+    mov rax, [rax + rsi * 8]
+    mov r10d, 17
+    call .Lpointer
+    test rax, rax
+    jz .Limport_malformed
+    cmp word ptr [rax + 6], 0x0001  # Import: one object field, then Bool
+    jne .Limport_malformed
+    movzx ecx, byte ptr [rax + 16]
+    cmp ecx, 1
+    je .Limport_runtime
+    ja .Limport_malformed
+    mov rbx, [rax + 8]
+
+    # Name prefixes are stored from leaf to root. Build the path in the
+    # same order at the buffer end, then copy it forward to the start.
+    mov r14, r15
+    sub r14, r13
+    cmp r14, 7
+    jb .Limport_capacity
+    lea r14, [r15 - 7]
+    mov dword ptr [r14], 0x656c6f2e # ".ole"
+    mov word ptr [r14 + 4], 0x6e61  # "an"
+    mov byte ptr [r14 + 6], 0
+
+.Limport_component:
+    mov rax, rbx
+    mov r10d, 32
+    call .Lpointer
+    test rax, rax
+    jz .Limport_malformed
+    cmp word ptr [rax + 6], 0x0102  # Name.str, two object fields
+    jne .Limport_malformed
+    cmp rbx, [rax + 8]
+    je .Limport_malformed
+    mov rbx, [rax + 8]
+    mov rax, [rax + 16]
+    call .Lpointer                  # LeanString header is also 32 bytes
+    test rax, rax
+    jz .Limport_malformed
+    cmp byte ptr [rax + 7], 249     # LeanString
+    jne .Limport_malformed
+    mov rcx, [rax + 8]
+    cmp rcx, 2                     # Nonempty component plus NUL
+    jb .Limport_malformed
+    lea rsi, [rax + 32]
+    mov r9, [r12 + VIEW_MAPPING]
+    add r9, [r12 + VIEW_SIZE]
+    sub r9, rsi
+    cmp rcx, r9
+    ja .Limport_malformed
+    dec rcx
+    cmp byte ptr [rsi + rcx], 0
+    jne .Limport_malformed
+
+    # Whole "." and ".." components would change path semantics.
+    cmp rcx, 2
+    ja .Limport_budget
+    cmp byte ptr [rsi], '.'
+    jne .Limport_budget
+    cmp rcx, 1
+    je .Limport_malformed
+    cmp byte ptr [rsi + 1], '.'
+    je .Limport_malformed
+
+.Limport_budget:
+    mov rax, r14
+    sub rax, r13
+    cmp rbx, 1                     # Name.anonymous ends the chain
+    je .Limport_check_size
+    sub rax, 1                     # Slash between this name and its prefix
+    jc .Limport_capacity
+.Limport_check_size:
+    cmp rcx, rax
+    ja .Limport_capacity
+
+    mov r8, rsi
+    lea r9, [rsi + rcx]
+.Limport_check_byte:
+    mov al, [r8]
+    cmp al, 0x20                   # Includes embedded NUL
+    jb .Limport_malformed
+    cmp al, '/'
+    je .Limport_malformed
+    cmp al, 0x7f
+    je .Limport_malformed
+    inc r8
+    cmp r8, r9
+    jb .Limport_check_byte
+
+    sub r14, rcx
+    mov rdi, r14
+    rep movsb
+    cmp rbx, 1
+    je .Limport_copy_result
+    dec r14
+    mov byte ptr [r14], '/'
+    mov rdi, r12
+    jmp .Limport_component
+
+.Limport_copy_result:
+    mov rax, r15
+    sub rax, r14
+    dec rax                        # Exclude NUL from the result length
+    cmp rax, 0x7fffffff
+    ja .Limport_capacity
+    lea rcx, [rax + 1]
+    mov rsi, r14
+    mov rdi, r13
+    rep movsb                      # Destination is at or before source
+    jmp .Limport_done
+.Limport_capacity:
+    mov eax, -1
+    jmp .Limport_done
+.Limport_malformed:
+    mov eax, -2
+    jmp .Limport_done
+.Limport_runtime:
+    mov eax, -3
+.Limport_done:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+.size mathlib_olean_import_path, . - mathlib_olean_import_path
 
 .globl mathlib_olean_lookup
 .type mathlib_olean_lookup, @function

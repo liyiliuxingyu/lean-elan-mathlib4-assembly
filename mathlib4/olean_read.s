@@ -343,7 +343,7 @@ mathlib_olean_lookup_cached:
     jnz .Lcomponents_ready
 .Lparse_components:
     mov r15, rsi
-    call .Lparse_query
+    call mathlib_olean_parse_query
     test eax, eax
     jz .Lbad_query
     mov rsi, r15
@@ -453,54 +453,9 @@ mathlib_olean_lookup_cached:
 
 .Lfound:
     mov rdi, r12
-    mov rax, [r12 + VIEW_CONSTANTS]
-    mov rax, [rax + rbx * 8]
-    mov r10d, 16
-    call .Lpointer
-    test rax, rax
-    jz .Lbad_cache
-    cmp byte ptr [rax + 6], 1
-    jne .Lbad_cache
-    movzx ecx, byte ptr [rax + 7]
-    cmp ecx, 7
-    ja .Lbad_cache
-    mov [r13 + RESULT_KIND], rcx
-    mov rdx, rax
-    sub rdx, [r12 + VIEW_MAPPING]
-    mov [r13 + RESULT_RECORD], rdx
-    cmp ecx, 2                      # ConstantInfo.thmInfo
-    jne .Lsuccess
-
-    mov rax, [rax + 8]
-    mov r10d, 32
-    call .Lpointer
-    test rax, rax
-    jz .Lbad_cache
-    cmp word ptr [rax + 6], 0x0003   # TheoremVal
-    jne .Lbad_cache
-    mov r15, rax
-    mov rax, [rax + 8]
-    call .Lpointer                  # ConstantVal is also 32 bytes
-    test rax, rax
-    jz .Lbad_cache
-    cmp word ptr [rax + 6], 0x0003
-    jne .Lbad_cache
-    mov rbp, [r12 + VIEW_NAMES]
-    mov rbp, [rbp + rbx * 8]
-    cmp rbp, [rax + 8]
-    jne .Lbad_cache
-    mov rax, [rax + 24]
-    call .Lexpr_offset
-    test rax, rax
-    jz .Lbad_cache
-    mov [r13 + RESULT_TYPE], rax
-    mov rax, [r15 + 16]
-    call .Lexpr_offset
-    test rax, rax
-    jz .Lbad_cache
-    mov [r13 + RESULT_PROOF], rax
-.Lsuccess:
-    mov eax, 1
+    mov rsi, rbx
+    mov rdx, r13
+    call mathlib_olean_record
     jmp .Llookup_done
 .Lmissing:
     xor eax, eax
@@ -521,6 +476,74 @@ mathlib_olean_lookup_cached:
     ret
 .size mathlib_olean_lookup_cached, . - mathlib_olean_lookup_cached
 
+# Read the ConstantInfo at a known index. Lookup and catalog construction
+# use the same theorem name, type and proof checks. Return 1 or -2.
+.globl mathlib_olean_record
+.hidden mathlib_olean_record
+.type mathlib_olean_record,@function
+mathlib_olean_record:
+    sub rsp, 8
+    cmp rsi, [rdi + VIEW_COUNT]
+    jae .Lbad_record
+    mov r8, rdx
+    mov rax, [rdi + VIEW_CONSTANTS]
+    mov rax, [rax + rsi * 8]
+    mov r10d, 16
+    call .Lpointer
+    test rax, rax
+    jz .Lbad_record
+    cmp byte ptr [rax + 6], 1
+    jne .Lbad_record
+    movzx ecx, byte ptr [rax + 7]
+    cmp ecx, 7
+    ja .Lbad_record
+    mov [r8 + RESULT_KIND], rcx
+    mov rdx, rax
+    sub rdx, [rdi + VIEW_MAPPING]
+    mov [r8 + RESULT_RECORD], rdx
+    mov qword ptr [r8 + RESULT_TYPE], 0
+    mov qword ptr [r8 + RESULT_PROOF], 0
+    cmp ecx, 2                      # ConstantInfo.thmInfo
+    jne .Lvalid_record
+
+    mov rax, [rax + 8]
+    mov r10d, 32
+    call .Lpointer
+    test rax, rax
+    jz .Lbad_record
+    cmp word ptr [rax + 6], 0x0003   # TheoremVal
+    jne .Lbad_record
+    mov r9, rax
+    mov rax, [rax + 8]
+    call .Lpointer                  # ConstantVal is also 32 bytes
+    test rax, rax
+    jz .Lbad_record
+    cmp word ptr [rax + 6], 0x0003
+    jne .Lbad_record
+    mov rdx, [rdi + VIEW_NAMES]
+    mov rdx, [rdx + rsi * 8]
+    cmp rdx, [rax + 8]
+    jne .Lbad_record
+    mov rax, [rax + 24]
+    call .Lexpr_offset
+    test rax, rax
+    jz .Lbad_record
+    mov [r8 + RESULT_TYPE], rax
+    mov rax, [r9 + 16]
+    call .Lexpr_offset
+    test rax, rax
+    jz .Lbad_record
+    mov [r8 + RESULT_PROOF], rax
+.Lvalid_record:
+    mov eax, 1
+    jmp .Lrecord_done
+.Lbad_record:
+    mov eax, -2
+.Lrecord_done:
+    add rsp, 8
+    ret
+.size mathlib_olean_record, .-mathlib_olean_record
+
 .Lexpr_offset:
     sub rsp, 8
     mov r10d, 8
@@ -535,7 +558,10 @@ mathlib_olean_lookup_cached:
 
 # Split once so the same components can be reused for every declaration.
 # rdi = text, rsi = array of { data/boxed Nat, length/-1 }; eax = count/0.
-.Lparse_query:
+.globl mathlib_olean_parse_query
+.hidden mathlib_olean_parse_query
+.type mathlib_olean_parse_query,@function
+mathlib_olean_parse_query:
     mov r9, rdi
     xor r10d, r10d
 .Lstart_part:
@@ -633,5 +659,7 @@ mathlib_olean_lookup_cached:
 .Linvalid_name:
     xor eax, eax
     ret
+
+.size mathlib_olean_parse_query, .-mathlib_olean_parse_query
 
 .section .note.GNU-stack,"",@progbits

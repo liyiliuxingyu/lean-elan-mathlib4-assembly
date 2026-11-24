@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
-/* Linux x86-64 process entry point for Elan's two local toolchain commands. */
+/* Linux x86-64 process entry point for Elan's installed-toolchain management commands. */
 .intel_syntax noprefix
 .equ CAP, 4096
 .equ SYS_stat, 4
@@ -18,6 +18,19 @@ _start:
     mov r12, [rsp]
     lea r13, [rsp+8]
     lea r14, [r13+r12*8+8]
+    mov [rip+.Lenvp], r14
+    jmp .Lenvironment
+.Ldispatch:
+    cmp r12, 2
+    jb .Lusage
+    mov rdi, [r13+8]
+    lea rsi, [rip+.Lwhich]
+    call .Lmatches
+    je .Lparse_command
+    mov rdi, [r13+8]
+    lea rsi, [rip+.Lrun]
+    call .Lmatches
+    je .Lparse_command
     cmp r12, 3
     jb .Lusage
     mov rdi, [r13+8]
@@ -30,7 +43,7 @@ _start:
     jne .Llink_args
     cmp r12, 3
     jne .Lusage
-    jmp .Lenvironment
+    jmp .Lhome_path
 .Llink_args:
     mov rdi, [r13+16]
     lea rsi, [rip+.Llink]
@@ -66,10 +79,17 @@ _start:
     call .Lvalid_arg
     test eax, eax
     jz .Lbad_utf8
+    jmp .Lhome_path
+.Lparse_command:
+    lea rdi, [r13+8]                /* argv starting at subcommand */
+    call elan_parse_command_args
+    mov [rip+.Lcommand_args], rax
+    mov [rip+.Lexplicit], rdx
+    jmp .Lhome_path
 .Lenvironment:
     mov rdi, [r14]
     test rdi, rdi
-    jz .Lhome_path
+    jz .Lguard
     add r14, 8
     lea rbx, [rip+.Lvars]
 .Lenv_match:
@@ -87,11 +107,13 @@ _start:
     mov rax, [rbx+16]
     mov [rax], rdi
     jmp .Lenvironment
-.Lhome_path:
+.Lguard:
     mov rsi, [rip+.Lrecursion]
     call elan_read_u32
     cmp eax, 5
     ja .Lrecursive
+    jmp .Ldispatch
+.Lhome_path:
     mov rdi, [rip+.Lelan_home]
     mov rsi, [rip+.Luser_home]
     lea rdx, [rip+.Lhome]
@@ -102,6 +124,15 @@ _start:
     call .Lmkdir_all
     test eax, eax
     js .Lcannot_home
+    mov rsi, [rip+.Lcommand_args]
+    test rsi, rsi
+    jz .Lmanagement
+    mov rdi, [rip+.Lexplicit]
+    mov rdx, [rip+.Lenvp]
+    lea rcx, [rip+.Lhome]
+    mov r8, [rip+.Ltoolchain_env]
+    jmp elan_command_main
+.Lmanagement:
     lea rdi, [rip+.Ldestination]
     lea rsi, [rip+.Lhome]
     lea rdx, [rip+.Ldestination+CAP]
@@ -447,6 +478,8 @@ elan_manage_write:
     ret
 
 .section .rodata
+.Lrun: .asciz "run"
+.Lwhich: .asciz "which"
 .Ltoolchain: .asciz "toolchain"
 .Ltoolchains: .asciz "toolchains"
 .Llink: .asciz "link"
@@ -457,11 +490,13 @@ elan_manage_write:
 .Lslash: .asciz "/"
 .Lelan_var: .ascii "ELAN_HOME="
 .Lhome_var: .ascii "HOME="
+.Ltoolchain_var: .ascii "ELAN_TOOLCHAIN="
 .Lrecursion_var: .ascii "LEAN_RECURSION_COUNT="
 .balign 8
 .Lvars:
     .quad .Lelan_var, 10, .Lelan_home
     .quad .Lhome_var, 5, .Luser_home
+    .quad .Ltoolchain_var, 15, .Ltoolchain_env
     .quad .Lrecursion_var, 21, .Lrecursion
     .quad 0
 .Linstalled_prefix: .asciz "error: '"
@@ -481,9 +516,12 @@ elan_manage_write:
 .Lpath_error: .asciz "error: toolchain path exceeds 4095 bytes\n"
 .Lhome_error: .asciz "error: could not resolve Elan home directory\n"
 .Lutf8_error: .asciz "error: command arguments must be UTF-8\n"
-.Lusage_text: .asciz "usage: elan toolchain list | elan toolchain link [--] NAME PATH\n"
+.Lusage_text: .asciz "usage: elan toolchain list | elan toolchain link [--] NAME PATH | elan which COMMAND | elan run [--install] TOOLCHAIN COMMAND [ARG ...]\n"
 .Lnot_found: .asciz "No such file or directory"
 .Lpermission: .asciz "Permission denied"
+.Lexec_format: .asciz "Exec format error"
+.Largs_long: .asciz "Argument list too long"
+.Ltext_busy: .asciz "Text file busy"
 .Lexists: .asciz "File exists"
 .Lnot_directory: .asciz "Not a directory"
 .Lreadonly: .asciz "Read-only file system"
@@ -493,10 +531,14 @@ elan_manage_write:
 .Lother: .asciz "Filesystem error"
 .balign 8
 .Lerrors:
-    .quad 2,.Lnot_found, 13,.Lpermission, 17,.Lexists, 20,.Lnot_directory
+    .quad 8,.Lexec_format, 7,.Largs_long, 26,.Ltext_busy, 2,.Lnot_found, 13,.Lpermission, 17,.Lexists, 20,.Lnot_directory
     .quad 28,.Lfull, 30,.Lreadonly, 36,.Llong, 40,.Lloop, 0,.Lother
 .section .bss
 .balign 8
+.Lenvp: .skip 8
+.Lcommand_args: .skip 8
+.Lexplicit: .skip 8
+.Ltoolchain_env: .skip 8
 .Lname_arg: .skip 8
 .Lroot_arg: .skip 8
 .Lelan_home: .skip 8

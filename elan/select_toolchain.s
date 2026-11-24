@@ -24,6 +24,10 @@
  * -> rax = selected descriptor, edx = kind. On error rax = 0 and
  * (rsi, rdx) is a diagnostic byte span suitable for write(2).
  */
+.globl elan_select_for_command
+elan_select_for_command:
+    mov     byte ptr [rip+.Lmanager], 1
+    mov     ecx, 1                  /* manager never emits the proxy override notice */
 elan_select_installed:
     push    rbx
     push    r12
@@ -60,7 +64,10 @@ elan_select_installed:
     xor     r15d, r15d              /* default if one exists */
     test    eax, eax
     js      .Lsettings_error
-    jz      .Ltoolchains_identity
+    jnz     .Lparse_settings
+    mov     byte ptr [rip+elan_selection_missing_settings], 1
+    jmp     .Ltoolchains_identity
+.Lparse_settings:
     lea     rdi, [rip+.Lsettings_text]
     call    elan_settings_default
     cmp     rax, -1
@@ -138,6 +145,22 @@ elan_select_installed:
     lea     r14, [rip+.Ldot]
     jmp     .Llookup_valid
 .Ltry_installation:
+    cmp     byte ptr [rip+.Lmanager], 0
+    je      .Lcheck_parent
+    cmp     byte ptr [rip+.Ltc_present], 0
+    jne     .Lcheck_parent
+    /* Cfg::find_override_from_dir_walk canonicalizes the toolchains dir on
+     * every ascent, including the last one when the current dir is "/". */
+    mov     rsi, r13
+    lea     r8, [rip+.Ltoolchains]
+    call    .Lscratch_path
+    jc      .Llength_error
+    lea     r8, [rip+.Lscratch]
+    push    r12
+    mov     r12, r8
+    call    .Lcanonical_notice
+    pop     r12
+.Lcheck_parent:
     lea     rax, [r14+1]
     cmp     rbx, rax
     je      .Ldefault
@@ -207,6 +230,7 @@ elan_select_installed:
     mov     rax, r12
     jmp     .Lreturn
 .Lproject:
+    mov     [rip+elan_selection_project_root], r14
     lea     rdi, [rip+.Lproject_text]
     call    .Lfirst_line
     mov     r12, rax
@@ -216,6 +240,7 @@ elan_select_installed:
 .Ldefault:
     test    r15, r15
     jz      .Lmissing_error
+    mov     byte ptr [rip+elan_selection_from_default], 1
     mov     r12, r15
     lea     r14, [rip+.Ldot]
     jmp     .Llookup_valid
@@ -267,6 +292,18 @@ elan_select_installed:
 .Lparse_named:
     cmp     byte ptr [r12], '/'
     je      .Lpath_error
+    cmp     byte ptr [r12], '.'
+    jne     .Lparse_release
+    lea     rsi, [r12+1]
+    cmp     byte ptr [rsi], '.'
+    jne     .Lpath_separator
+    inc     rsi
+.Lpath_separator:
+    cmp     byte ptr [rsi], '/'
+    je      .Lpath_error
+    cmp     byte ptr [rsi], 92       /* backslash */
+    je      .Lpath_error
+.Lparse_release:
     mov     rdi, r12
     call    elan_strlen
     mov     rsi, rax
@@ -363,8 +400,9 @@ elan_select_installed:
     mov     edx, 2
     jmp     .Lreturn
 
-.macro ERROR label, message
+.macro ERROR label, message, status=0
 \label:
+    mov     ecx, \status
     lea     rsi, [rip+\message]
     mov     edx, OFFSET FLAT:\message\()_len
     xor     eax, eax
@@ -375,9 +413,21 @@ ERROR .Lsettings_error, .Lbad_settings
 ERROR .Lproject_error, .Lbad_project
 ERROR .Lleanpkg_error, .Lbad_leanpkg
 ERROR .Ldirectory_error, .Lbad_directory
-ERROR .Lmissing_error, .Lmissing
-ERROR .Lname_error, .Lbad_name
-ERROR .Lpath_error, .Lbad_path
+ERROR .Lmissing_error, .Lmissing, 3
+.Lname_error:
+    mov     r8, r12
+    jmp     .Linvalid_name
+ERROR .Linvalid_name, .Lbad_name, 1
+.Lpath_error:
+    /* Retain both strings for the manager's detailed path diagnostic. */
+    lea     rsi, [rip+.Lscratch]
+    lea     rdi, [rip+.Lproject_text]
+    lea     rdx, [rip+.Lproject_text+PATH_CAP]
+    call    elan_append_z
+    mov     byte ptr [rbx], 0
+    lea     r8, [rip+.Lscratch]
+    lea     r9, [rip+.Lproject_text]
+ERROR .Linvalid_path, .Lbad_path, 2
 ERROR .Lchannel_error, .Lfloating
 .Lreturn:
     pop     r15
@@ -404,6 +454,10 @@ ERROR .Lchannel_error, .Lfloating
 /* Write the standard two-line database override notice. r12 = name, r14 =
  * canonical directory. A suppressed notice never enters this routine.
  */
+.Lcanonical_notice:
+    push    rbx
+    lea     rbx, [rip+.Lwarn_sequence]
+    jmp     .Lnotice_piece
 .Loverride_notice:
     push    rbx
     lea     rbx, [rip+.Lnotice_sequence]
@@ -668,7 +722,11 @@ ERROR .Lchannel_error, .Lfloating
 .Lnotice_remove:   .asciz "'\nnote: to remove: elan override unset --path '"
 .Lnotice_suppress: .asciz "' | to suppress: ELAN_NO_OVERRIDE_NOTICE=1\n"
 .balign 8
+.Lwarn_sequence: .quad .Lwarn_prefix, 1, .Lwarn_end, 0
 .Lnotice_sequence: .quad .Lnotice_tool, 1, .Lnotice_from, 2, .Lnotice_remove, 2, .Lnotice_suppress, 0
+
+.Lwarn_prefix: .asciz "warning: could not canonicalize path: '"
+.Lwarn_end: .asciz "'\n"
 
 .macro MESSAGE label, value
 \label: .ascii "elan-asm-proxy: \value\n"
@@ -695,6 +753,13 @@ MESSAGE .Lfloating, "floating channel requires release metadata; specify a pinne
 .Lscratch:         .skip PATH_CAP
 .Lsettings_text:   .skip FILE_CAP+1
 .Lproject_text:    .skip FILE_CAP+1
+.Lmanager:         .skip 1
 .Ltc_present:      .skip 1
+.globl elan_selection_from_default
+elan_selection_from_default: .skip 1
+.globl elan_selection_missing_settings, elan_selection_project_root
+elan_selection_missing_settings: .skip 1
+.balign 8
+elan_selection_project_root: .skip 8
 
 .section .note.GNU-stack,"",@progbits

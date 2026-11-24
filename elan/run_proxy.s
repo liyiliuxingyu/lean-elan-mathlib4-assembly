@@ -23,6 +23,18 @@
 .equ ENV_SLOTS, 6
 
 .section .text
+.ifdef MANAGER_LAUNCH
+/* Resolved manager command. rdi descriptor, rsi binary_file, rdx child argv,
+ * rcx envp. Manager already checked toolchain existence. */
+.globl elan_manager_launch
+elan_manager_launch:
+    mov r12, rdi
+    mov [rip+.Lselected_name], rdi
+    mov [rip+.Lselected_file], rsi
+    mov r13, rdx
+    mov r14, rcx
+    jmp .Lcollect_environment
+.else
 .globl _start
 .type _start, @function
 _start:
@@ -91,15 +103,10 @@ _start:
 .endif
     cmp     al, '/'
     je      .Linvalid_command
-    test    rcx, rcx
-    jz      .Lnext_command_byte
-    cmp     al, '.'
-    jne     .Lnext_command_byte
-    mov     byte ptr [rip+.Lhas_extension], 1
-.Lnext_command_byte:
     inc     rcx
     jmp     .Lscan_command_byte
 
+.endif /* standalone launch entry */
 .Lcollect_environment:
     mov     rbp, r14
 .Lread_env:
@@ -120,8 +127,50 @@ _start:
     call    elan_read_u32
     cmp     eax, 5
     ja      .Lrecursion_limit
-    add     al, '1'
-    mov     [rip+.Lrecursion_digit], al
+    mov     [rip+.Lparent_count], eax
+    /* env_var::inc parses a signed i32, whereas the recursion guard and
+     * toolchain fallback parse u32. Preserve negative counter values. */
+    mov     rsi, [rip+.Lenv_values+ENV_RECURSION*8]
+    test    rsi, rsi
+    jz      .Linc_count
+    cmp     byte ptr [rsi], '-'
+    jne     .Linc_count
+    inc     rsi
+    cmp     byte ptr [rsi], '+'
+    je      .Linc_count
+    call    elan_read_u32
+    cmp     eax, 0x80000000
+    jbe     .Lnegative
+    xor     eax, eax
+.Lnegative:
+    neg     eax
+.Linc_count:
+    inc     eax
+    mov     esi, eax
+    test    eax, eax
+    jns     .Ldigits
+    neg     eax
+.Ldigits:
+    lea     rdi, [rip+.Lrecursion_end]
+    mov     byte ptr [rdi], 0
+    mov     ecx, 10
+.Ldigit:
+    xor     edx, edx
+    div     ecx
+    add     dl, '0'
+    dec     rdi
+    mov     [rdi], dl
+    test    eax, eax
+    jne     .Ldigit
+    test    esi, esi
+    jns     .Lcopy_count
+    dec     rdi
+    mov     byte ptr [rdi], '-'
+.Lcopy_count:
+    mov     rsi, rdi
+    lea     rdi, [rip+.Lrecursion_digit]
+    lea     rdx, [rip+.Lrecursion_end+1]
+    call    elan_append_z
 
     mov     rdi, [rip+.Lenv_values+ENV_ELAN_HOME*8]
     mov     rsi, [rip+.Lenv_values+ENV_HOME*8]
@@ -135,6 +184,9 @@ _start:
     jnz     .Ltoo_long
 
 .Lhome_ready:
+.ifdef MANAGER_LAUNCH
+    jmp .Lbuild_home_env
+.else
 .ifdef AUTO_SELECT
     mov     rdi, r12
     mov     rsi, [rip+.Lenv_values+ENV_TOOLCHAIN*8]
@@ -150,58 +202,16 @@ _start:
 .Lbuild_program:
     lea     rdi, [rip+.Lprogram]
     lea     rdx, [rip+.Lprogram+PATH_CAPACITY]
-    cmp     dword ptr [rip+.Ldesc], 3
-    jne     .Linstalled_toolchain
-    mov     rsi, r12
-    call    elan_append_z
-    jc      .Ltoo_long
-    jmp     .Lprogram_bin
-.Linstalled_toolchain:
+    mov     ecx, [rip+.Ldesc]
+    mov     r8, r12
     lea     rsi, [rip+.Lhome]
-    call    elan_append_z
-    jc      .Ltoo_long
-    lea     rsi, [rip+.Ltoolchains]
-    call    elan_join_component
-    jc      .Ltoo_long
-    /* Existing directory name encoding: / becomes -- and : becomes ---. */
-    cmp     rdi, rdx
-    jae     .Ltoo_long
-    mov     byte ptr [rdi], '/'
-    inc     rdi
-    mov     rsi, r12
-    call    elan_append_encoded
-    jc      .Ltoo_long
-.Lprogram_bin:
-    lea     rsi, [rip+.Lbin]
-    call    elan_join_component
+    call    elan_toolchain_root
     jc      .Ltoo_long
     mov     rsi, r15
-    call    elan_join_component
+    lea     r8, [rip+.Lprogram]
+    call    elan_binary_file
     jc      .Ltoo_long
-    cmp     byte ptr [rip+.Lhas_extension], 0
-    jne     .Lbuild_home_env
-    /* The staged Linux port folds ASCII in extensionless basenames. */
-    mov     rcx, r15
-.Lwalk_basename:
-    cmp     byte ptr [rcx], 0
-    je      .Lfold_basename
-    inc     rcx
-    jmp     .Lwalk_basename
-.Lfold_basename:
-    sub     rcx, r15
-    sub     rdi, rcx
-.Lfold_byte:
-    mov     al, [rdi]
-    test    al, al
-    jz      .Lbuild_home_env
-    cmp     al, 'A'
-    jb      .Lfold_next
-    cmp     al, 'Z'
-    ja      .Lfold_next
-    or      byte ptr [rdi], 32
-.Lfold_next:
-    inc     rdi
-    jmp     .Lfold_byte
+.endif
 
 .Lbuild_home_env:
     lea     rdi, [rip+.Lhome_env]
@@ -298,6 +308,19 @@ _start:
 .Lterminate_env:
     mov     qword ptr [rbx], 0
 
+.ifdef MANAGER_LAUNCH
+    mov     rdi, [rip+.Lselected_file]
+    mov     rsi, r13
+    mov     rdx, r12
+    mov     rcx, [rip+.Lselected_name]
+    mov     r8, [rip+.Lenv_values+ENV_PATH*8]
+    cmp     byte ptr [rip+.Lpath_env], 0
+    je      .Lmanager_exec
+    lea     r8, [rip+.Lpath_env+5]
+.Lmanager_exec:
+    mov     r9d, [rip+.Lparent_count]
+    jmp     elan_manager_exec
+.else
     lea     rdi, [rip+.Lprogram]
     mov     rsi, r13                /* replace command/selector slot with argv[0] */
     mov     [rsi], rdi
@@ -313,6 +336,7 @@ _start:
     mov     r10d, 126
     jmp     .Lreport
 
+.endif
 .Lusage:
     lea     rsi, [rip+.Lusage_error]
     mov     edx, OFFSET FLAT:.Lusage_error_len
@@ -368,7 +392,9 @@ _start:
     mov     edi, r10d
     mov     eax, SYS_EXIT
     syscall
+.ifndef MANAGER_LAUNCH
 .size _start, .-_start
+.endif
 
 /* rdi = environment string; eax = key number or -1; rdx = value. */
 .Lenvironment_entry:
@@ -442,10 +468,12 @@ LAUNCH_ERROR .Lexec_error, "cannot execute the selected toolchain binary"
 .Lrecursion_env:
     .ascii "LEAN_RECURSION_COUNT="
 .Lrecursion_digit:
-    .asciz "1"
+    .skip 11
+.Lrecursion_end: .byte 0
 
 .section .bss
 .balign 8
+.Lparent_count:  .skip 8
 .Ldesc:          .skip 40
 .Lenv_values:    .skip ENV_SLOTS*8
 .Lhome:          .skip PATH_CAPACITY
@@ -453,6 +481,10 @@ LAUNCH_ERROR .Lexec_error, "cannot execute the selected toolchain binary"
 .Lhome_env:      .skip PATH_CAPACITY+10
 .Ltoolchain_env: .skip PATH_CAPACITY+15
 .Lpath_env:      .skip ENV_PATH_CAPACITY
-.Lhas_extension: .skip 1
+.ifdef MANAGER_LAUNCH
+.balign 8
+.Lselected_name: .skip 8
+.Lselected_file: .skip 8
+.endif
 
 .section .note.GNU-stack,"",@progbits

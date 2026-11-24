@@ -12,10 +12,10 @@ build/elan/elan-asm-run leanprover/lean4:v4.19.0 lean --version
 
 - 绝对路径直接用作工具链根目录。已链接的本地名称及完整远程发行描述符定位到 `ELAN_HOME/toolchains`。例如 `leanprover/lean4:v4.19.0` 对应目录名 `leanprover--lean4---v4.19.0`。
 - 设置了 `ELAN_HOME` 时使用该值，相对值以当前目录为基准。否则使用 `$HOME/.elan`。运行时将 `ELAN_HOME` 和当前描述符写入子进程环境，按上游规则递增 `LEAN_RECURSION_COUNT` 并把 `ELAN_HOME/bin` 加入 `PATH` 开头。`ELAN_HOME` 含有冒号时按上游规则保留原 `PATH`。
-- 命令为 `bin` 下的单个文件名。无扩展名时转换 ASCII 大写字母。有扩展名时保留原拼写。
+- 命令为 `bin` 下的单个文件名。无扩展名时执行 Unicode 17.0 默认小写转换。有扩展名时保留原拼写。
 - 参数或配置错误返回 `2`。内核报告命令路径不存在或中间组件不是目录时返回 `127`。其余启动错误返回 `126`。启动成功后直接返回目标进程的状态。
 
-该入口处理已解析、已安装工具链的正常启动路径。自动选择和相对路径由 [elan-asm-proxy](SELECTION.md) 处理。远程频道解析、下载、安装、系统 `PATH` 查找回退以及无扩展名时的 Unicode 小写转换仍待移植。工具链命令本身使用其原有实现。
+该入口处理已解析、已安装工具链的正常启动路径。自动选择和相对路径由 [elan-asm-proxy](SELECTION.md) 处理。远程频道解析、下载和安装仍待移植。通过系统 `PATH` 回退运行任意程序可使用正式的 [elan run](MANAGER.md)。工具链命令本身使用其原有实现。
 
 [Elan v4.2.4 工具链目录和环境处理](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan/toolchain.rs#L388) · [Unix 进程启动实现](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan/command.rs)
 

@@ -1,4 +1,8 @@
-# `Nat.succ_injective` 汇编证明证书
+# Mathlib4 汇编实现与缓存读取
+
+跨多个归档发现声明和导出证明，见[本地缓存索引](CATALOG.md)。任意精度的 `Nat.pair` 和 `Nat.unpair` 计算，见[自然数配对](PAIRING.md)。
+
+## `Nat.succ_injective` 汇编证明证书
 
 mathlib4 `v4.19.0` 的 `Nat.succ_injective` 断言，对任意自然数 `x` 和 `y`，由 `Nat.succ x = Nat.succ y` 得到 `x = y`。原声明调用 Lean 核心的 `Nat.succ.inj`。这里把同一命题编码成汇编数据，通过给等式两边应用 `Nat.pred` 推导结论。[上游声明](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55)
 

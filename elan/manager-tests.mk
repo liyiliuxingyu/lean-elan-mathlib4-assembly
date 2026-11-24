@@ -66,3 +66,13 @@ test-manager-oracle: $(BUILD_DIR)/elan
 		record list; mv "$$ELAN_HOME" "$$prefix-home"; \
 	done; cmp reference.log assembly.log; \
 	printf '%s\n' 'elan toolchain manager upstream differential passed'
+
+.PHONY: test-commands test-commands-oracle
+test: test-commands
+test-commands: $(BUILD_DIR)/elan $(BUILD_DIR)/test-run-probe
+	@sh test_commands.sh "$(abspath $(BUILD_DIR))/elan" "$(abspath $(BUILD_DIR))/test-run-probe"
+
+test-commands-oracle: $(BUILD_DIR)/elan $(BUILD_DIR)/test-run-probe
+	@set -eu; ref=$$(command -v "$(ELAN_ORACLE)"); \
+	case "$$ref" in /*) ;; *) ref="$$PWD/$$ref";; esac; \
+	sh test_commands.sh "$(abspath $(BUILD_DIR))/elan" "$(abspath $(BUILD_DIR))/test-run-probe" "$$ref"

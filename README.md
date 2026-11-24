@@ -1,12 +1,12 @@
 # Lean 4、Elan、Mathlib4 汇编移植
 
-这是三个项目的第六阶段汇编移植源码包。目标是 Linux x86-64、ELF 和 System V AMD64 ABI。实现与自测采用 GNU `as` 的 Intel 汇编语法。Makefile 负责组装、链接和运行测试。
+这是三个项目的第七阶段汇编移植源码包。目标是 Linux x86-64、ELF 和 System V AMD64 ABI。产品实现采用 GNU `as` 的 Intel 汇编语法。Makefile 负责组装和链接，测试编排使用 Make 和 shell。
 
 | 项目 | 此版本实现 | 上游基线 |
 | --- | --- | --- |
-| Lean 4 | `hash_str` 和 `src/runtime/utf8.cpp` 的全部 19 个公开符号，另含 8 个 Expr 和 4 个 Level 数据访问器，以及函数应用链的 8 个定义、13 个原生入口。 | [v4.19.0 · 6caaee842e94](https://github.com/leanprover/lean4/tree/6caaee842e9495688c1567e78c0e68dbb96942aa/src/runtime) |
-| Elan | 解析工具链描述符和目录名，可从参数、环境、项目文件和本机设置选择已安装工具链并启动命令，支持列举工具链和链接本地构建。 | [v4.2.4 · 227caca13372](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs) |
-| Mathlib4 | 将 `Nat.succ_injective` 表示为汇编数据，提供汇编证明检查器和 Lean 证明导出程序。直接查询编译好的 `.olean`，可沿导入遍历、批量索引声明、导出定理的类型、证明和元数据。可直接从 `.ltar` 压缩缓存查声明、读证明或输出指定成员。 | [v4.19.0 · c44e0c8ee63c](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55) |
+| Lean 4 | `hash_str` 和 `src/runtime/utf8.cpp` 的全部 19 个公开符号，另含 8 个 Expr 和 4 个 Level 数据访问器，函数应用链的 8 个定义、13 个原生入口，以及松散绑定变量的升降下标操作。 | [v4.19.0 · 6caaee842e94](https://github.com/leanprover/lean4/tree/6caaee842e9495688c1567e78c0e68dbb96942aa/src/runtime) |
+| Elan | 解析工具链描述符和目录名，可从参数、环境、项目文件和本机设置选择已安装工具链并启动命令，支持列举、链接工具链，定位或运行所选工具链上的命令。 | [v4.2.4 · 227caca13372](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs) |
+| Mathlib4 | 将 `Nat.succ_injective` 表示为汇编数据，提供汇编证明检查器和 Lean 证明导出程序。直接查询编译好的 `.olean`，可沿导入遍历、批量索引声明、导出定理的类型、证明和元数据。可直接读取 `.ltar`、建立跨归档声明索引，并用任意精度自然数执行 `Nat.pair` 和 `Nat.unpair`。 | [v4.19.0 · c44e0c8ee63c](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55) |
 
 ## 构建与验证
 
@@ -34,7 +34,14 @@ build/mathlib4/mathlib-ltar --term SetDefs.ltar Set.ext
 build/mathlib4/mathlib-olean --term /path/to/Mathlib/Data/Nat/Basic.olean Nat.succ_injective
 ```
 
-`make test` 运行独立的汇编测试。`make test-lean` 需要官方 Lean v4.19.0。它把证明证书转换为 Lean 源码，再由官方 Lean 检查该命题的证明。`make test-upstream` 还会用系统链接驱动和官方 Lean 动态库分别链接对照程序，逐行比较 12 个原生数据访问器和 13 个应用链入口的结果。
+`make test` 运行独立的汇编测试。`make test-lean` 需要官方 Lean v4.19.0。它把证明证书转换为 Lean 源码，再由官方 Lean 检查该命题的证明。`make test-upstream` 还会用系统链接驱动和官方 Lean 动态库分别链接对照程序，逐行比较原生数据访问器、函数应用链以及松散绑定变量位移入口的结果。
+
+## 第七阶段
+
+- **跨归档缓存查询**。为一批 `.ltar` 建立一次本地索引，随后按声明名称查种类和来源文件，或直接按定理名称导出证明。在固定版本 `Mathlib/Data/Nat/` 下全部 80 个模块上核对了 4,786 条声明。3,134 个定理共 709,180 行类型和证明图与查询官方解包文件的结果逐字节一致。[命令、优先级与文件格式](mathlib4/CATALOG.md) · [真实样本与计时](mathlib4/CATALOG-CORPUS.md) · [自然数目录全量核对](mathlib4/CATALOG-NAT-CORPUS.md)
+- **Mathlib4 自然数配对**。新增两个真正执行数学计算的汇编函数 `Nat.pair`、`Nat.unpair`。独立程序支持超出 64 位的自然数，包含多精度算术与整数平方根。对公开缓存中编译出的上游实现完成了 1,848 次正反向对照。可用 `build/mathlib4/mathlib-pairing pair 3 5` 得到 28，反向运行 `unpair 28` 得到 `3 5`。[定义与对照测试](mathlib4/PAIRING.md)
+- **Lean 绑定变量**。移植表达式中松散绑定变量的下标提升和降低，包括两个闭包入口。对 13 个模块中 61 个定理的 3,197 个表达式节点，与官方内核接口对照 38,364 次，比较返回结构、原节点是否复用和心跳增量。[运行时依赖与验证](lean4/EXPR-SHIFT.md)
+- **Elan 本地命令**。新增 `elan which COMMAND` 和 `elan run TOOLCHAIN COMMAND [ARG...]`，用于定位命令和在已安装工具链下启动进程。另用官方 Elan 4.2.4 核对了 150 次离线调用的输出和退出状态。[Elan 管理命令](elan/MANAGER.md)
 
 ## 第六阶段
 
@@ -103,6 +110,6 @@ build/mathlib4/mathlib-olean --term /path/to/Mathlib/Data/Nat/Basic.olean Nat.su
 
 ## 覆盖范围
 
-当前包中的程序实现、夹具和测试驱动使用 GNU 汇编。Makefile 和构建配方负责编译、链接及运行测试。独立的缓存命令无需安装 Lean。接入官方 Lean 进程时，部分运行时符号仍依赖其内存管理和 C++ ABI；Elan 启动的工具链命令使用所选工具链原有的可执行文件。
+当前包中的产品代码、二进制夹具及调用官方 ABI 的测试驱动使用 GNU 汇编。构建与测试编排使用 Make 和 shell，部分可选对照测试使用上游 Lean 定义或从官方缓存提取的 C。独立的缓存命令无需安装 Lean。接入官方 Lean 进程时，部分运行时符号仍依赖其内存管理和 C++ ABI；Elan 启动的工具链命令使用所选工具链原有的可执行文件。
 
 Lean 的完整内核、编译器、标准库及 Lake，Elan 的联网下载、安装和自更新，以及 Mathlib4 全部定理和策略的源码移植仍待完成。读取缓存中的证明和元数据后，通用证明类型检查仍由 Lean 内核承担。三个完整上游项目的全套测试尚未运行。

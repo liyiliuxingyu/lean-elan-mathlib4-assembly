@@ -140,13 +140,14 @@ $(BUILD_DIR)/ltar-utf8.o: ../lean4/utf8.s | $(BUILD_DIR)
 
 include lgz-test.mk
 include zstd-test.mk
+include catalog.mk
 
 test: test-lgz test-zstd
 
 $(BUILD_DIR)/ltar.o: ltar_payload.inc olean_layout.inc
 $(BUILD_DIR)/ltar_zstd_stream.o: zstd.inc
 
-$(BUILD_DIR)/mathlib-ltar: $(BUILD_DIR)/ltar.o $(BUILD_DIR)/ltar_zstd_stream.o $(BUILD_DIR)/ltar-utf8.o $(cache_reader) $(cache_term) $(lgz_objects) $(zstd_objects) $(BUILD_DIR)/zstd_dict.o
+$(BUILD_DIR)/mathlib-ltar: $(BUILD_DIR)/ltar.o $(archive_reader) $(cache_term)
 	$(LD) $(LDFLAGS) -o "$@" $^
 
 .PHONY: test-ltar
@@ -170,3 +171,9 @@ include metadata-test.mk
 include ltar-payload-test.mk
 
 include ltar-corpus-test.mk
+
+include pairing.mk
+
+include catalog-corpus-test.mk
+
+include catalog-nat-corpus.mk

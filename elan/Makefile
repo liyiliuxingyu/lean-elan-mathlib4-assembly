@@ -34,15 +34,23 @@ test-run-proxy: $(BUILD_DIR)/elan-asm-run $(BUILD_DIR)/test-run-probe
 	test "$$status" -eq 127; test ! -s "$$scratch/actual"; test -s "$$scratch/diagnostic"; \
 	printf '%s\n' 'elan local launcher tests passed'
 
-manager_objs := $(addprefix $(BUILD_DIR)/,manager.o toolchain_list.o toolchain_order.o path.o toolchain_desc.o selection_utf8.o)
+selection_objs := $(addprefix $(BUILD_DIR)/,select_toolchain.o leanpkg_version.o settings_default.o)
+binary_objs := $(addprefix $(BUILD_DIR)/,binary_path.o lowercase.o selection_utf8.o toolchain_desc.o path.o)
+manager_objs := $(addprefix $(BUILD_DIR)/,manager.o command_args.o command.o command_state.o \
+	manager_launch.o manager_exec.o toolchain_list.o toolchain_order.o) $(selection_objs) $(binary_objs)
 $(BUILD_DIR)/elan: $(manager_objs)
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
 
 $(BUILD_DIR)/elan-asm-descriptor: $(BUILD_DIR)/descriptor_cli.o $(BUILD_DIR)/toolchain_desc.o
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
 
-$(BUILD_DIR)/elan-asm-run: $(BUILD_DIR)/run_proxy.o $(BUILD_DIR)/toolchain_desc.o $(BUILD_DIR)/path.o
+$(BUILD_DIR)/elan-asm-run: $(BUILD_DIR)/run_proxy.o $(binary_objs)
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
+
+$(BUILD_DIR)/lowercase.o: lowercase_data.inc
+
+$(BUILD_DIR)/manager_launch.o: run_proxy.s | $(BUILD_DIR)
+	$(AS) --64 $(ASFLAGS) --defsym MANAGER_LAUNCH=1 -o $@ $<
 
 $(BUILD_DIR)/proxy_entry.o: run_proxy.s | $(BUILD_DIR)
 	$(AS) --64 $(ASFLAGS) --defsym AUTO_SELECT=1 -o $@ $<
@@ -50,7 +58,7 @@ $(BUILD_DIR)/proxy_entry.o: run_proxy.s | $(BUILD_DIR)
 $(BUILD_DIR)/selection_utf8.o: ../lean4/utf8.s | $(BUILD_DIR)
 	$(AS) --64 $(ASFLAGS) -o $@ $<
 
-$(BUILD_DIR)/elan-asm-proxy: $(BUILD_DIR)/proxy_entry.o $(BUILD_DIR)/path.o $(BUILD_DIR)/select_toolchain.o $(BUILD_DIR)/leanpkg_version.o $(BUILD_DIR)/settings_default.o $(BUILD_DIR)/toolchain_desc.o $(BUILD_DIR)/selection_utf8.o
+$(BUILD_DIR)/elan-asm-proxy: $(BUILD_DIR)/proxy_entry.o $(selection_objs) $(binary_objs)
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
 
 $(BUILD_DIR)/test-settings-default: $(BUILD_DIR)/test_settings_default.o $(BUILD_DIR)/settings_default.o $(BUILD_DIR)/toolchain_desc.o

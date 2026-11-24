@@ -56,57 +56,32 @@
 .Lresult:         .skip RESULT_BYTES
 .popsection
 
-# Directory walk hook. rbx/rbp delimit a checked member name, r12 is the
-# archive base. Queries require one LGZ member whose path ends in ".olean".
-.Lselect_member:
-    cmp qword ptr [rip+.Lmode], MODE_CAT
-    je .Lmatch_exact
-    cmp qword ptr [rip+.Lkind], 1
-    jne .Lnext_record
-    cmp rbp, 6
-    jb .Lnext_record
-    cmp word ptr [rbx+rbp-6], 0x6f2e
-    jne .Lnext_record
-    cmp dword ptr [rbx+rbp-4], 0x6e61656c
-    jne .Lnext_record
-    jmp .Lsave_match
-.Lmatch_exact:
-    mov rsi, [rip+.Larguments]
-    mov rsi, [rsi]
-    mov rdi, rbx
-    call .Lequal
-    test eax, eax
-    jz .Lnext_record
-.Lsave_match:
+# mathlib_ltar_walk callback(wanted_path, kind, name, name_length, data, size).
+.Lselect_exact:
+    cmp esi, 5                         # comments are not named members
+    je .Lselect_done
+    mov r10d, esi
+    mov rsi, rdx                       # include the path terminator in equality
+    inc rcx
+    repe cmpsb
+    jne .Lselect_done
     inc qword ptr [rip+.Lmatch_count]
-    mov rax, [rip+.Lstart]
-    add rax, r12
-    mov [rip+.Lselected_data], rax
-    mov rax, [rip+.Lsize]
-    mov [rip+.Lselected_size], rax
-    mov rax, [rip+.Lkind]
-    mov [rip+.Lselected_kind], rax
-    jmp .Lnext_record
+    mov [rip+.Lselected_data], r8
+    mov [rip+.Lselected_size], r9
+    mov [rip+.Lselected_kind], r10
+.Lselect_done:
+    ret
 
-# The directory is fully validated at this point; output starts only after a
-# unique match and successful reconstruction of the selected member.
+# Directory and unique selection were validated before reaching this point.
 .Lhandle_payload:
-    cmp qword ptr [rip+.Lmatch_count], 1
-    ja .Lambiguous
-    jb .Lno_match
     mov rdi, [rip+.Lselected_data]
     mov rsi, [rip+.Lselected_size]
-    mov ebx, [rip+.Lselected_kind]
     cmp ebx, 2
     jae .Lhash_member
-    xor edx, edx                     # generic Zstandard members use no dictionary
-    xor ecx, ecx
     test ebx, ebx
-    jz .Linflate
-    lea rdx, [rip+mathlib_zstd_dict]
-    lea rcx, [rip+mathlib_zstd_dict_end]
-    sub rcx, rdx
-.Linflate:
+    jnz .Ldecode_olean
+    xor edx, edx                       # generic Zstandard members use no dictionary
+    xor ecx, ecx
     lea r8, [rip+.Lzstd_buffer]
     lea r9, [rip+.Lzstd_length]
     call mathlib_ltar_zstd_stream
@@ -114,19 +89,13 @@
     jnz .Ldecode_error
     mov rsi, [rip+.Lzstd_buffer]
     mov rdx, [rip+.Lzstd_length]
-    test ebx, ebx
-    jz .Lcat_bytes
-    mov rdi, rsi
-    mov rsi, rdx
+    jmp .Lcat_bytes
+.Ldecode_olean:
     lea rdx, [rip+.Lolean_buffer]
     lea rcx, [rip+.Lolean_length]
-    call lgz_decode
+    call mathlib_ltar_decode_olean
     test eax, eax
     jnz .Ldecode_error
-    mov rdi, [rip+.Lzstd_buffer]
-    mov rsi, [rip+.Lzstd_length]
-    mov eax, 11                      # release the intermediate LGZ stream
-    syscall
     mov rsi, [rip+.Lolean_buffer]
     mov rdx, [rip+.Lolean_length]
     cmp r15d, MODE_CAT
@@ -235,8 +204,6 @@
     mov edx, AMBIGUOUS_BYTES
     jmp .Lerror
 .Lno_match:
-    cmp r15d, MODE_CAT
-    jne .Lno_olean
     lea rsi, [rip+.Lmissing_member_msg]
     mov edx, MISSING_MEMBER_BYTES
     mov r8d, 1

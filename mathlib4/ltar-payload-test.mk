@@ -1,6 +1,6 @@
 .PHONY: test-ltar-payload
 test-ltar: test-ltar-payload
-test-ltar-payload: $(BUILD_DIR)/mathlib-ltar $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/ltar_payload_fixture.o $(BUILD_DIR)/ltar_fixture.o
+test-ltar-payload: $(BUILD_DIR)/catalog-archive-test $(BUILD_DIR)/mathlib-ltar $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/ltar_payload_fixture.o $(BUILD_DIR)/ltar_fixture.o
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf -- "$$tmp"' EXIT; \
 	reader="$(BUILD_DIR)/mathlib-ltar"; fixture="$(BUILD_DIR)/ltar_payload_fixture.o"; \
 	$(OBJCOPY) -O binary -j .ltar_payload "$$fixture" "$$tmp/module"; \
@@ -36,7 +36,13 @@ test-ltar-payload: $(BUILD_DIR)/mathlib-ltar $(BUILD_DIR)/mathlib-olean $(BUILD_
 	$(OBJCOPY) -O binary -j .ltar_v2 "$(BUILD_DIR)/ltar_fixture.o" "$$tmp/bad_zstd"; \
 	expect_failure 2 --cat "$$tmp/bad_zstd" x.olean; \
 	status=0; "$$reader" --cat "$$tmp/module" tiny.bin > /dev/full 2> "$$tmp/err" || status=$$?; \
-	test "$$status" -eq 2; test -s "$$tmp/err"; printf '%s\n' 'ltar payload and theorem tests passed'
+	test "$$status" -eq 2; test -s "$$tmp/err"; \
+	for kind in empty_lgz bad_image; do \
+	    $(OBJCOPY) -O binary -j .catalog_$$kind "$(BUILD_DIR)/catalog_archive_test.o" "$$tmp/$$kind"; \
+	done; \
+	"$(BUILD_DIR)/catalog-archive-test" "$$tmp/module" "$$tmp/legacy" "$$tmp/bad_zstd" "$$tmp/empty_lgz" \
+	    "$$tmp/bad_image" "$$tmp/ambiguous" "$$tmp/trailing" "$$tmp/absent" "$$tmp"; \
+	printf '%s\n' 'ltar payload and theorem tests passed'
 
 # Optional external oracle. Supply a directory of official cache downloads and
 # leantar 0.1.15. Each archive is unpacked into its own fresh reference folder.

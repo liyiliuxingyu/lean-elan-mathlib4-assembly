@@ -2,7 +2,6 @@
 # Read members and metadata using the leangz 0.1.15 LTAR / LTR2 wire format.
 .intel_syntax noprefix
 .include "olean_layout.inc"
-.equ MODE_CHECK, 0
 .equ MODE_COMMENTS, 1
 .equ MODE_LIST, 2
 .equ MODE_CAT, 3
@@ -39,10 +38,8 @@
 
 .bss
 .balign 8
-.Lmode:  .skip 8
-.Lkind:  .skip 8
-.Lstart: .skip 8
-.Lsize:  .skip 8
+.Larchive:      .skip 8
+.Larchive_size: .skip 8
 .Lused:  .skip 8
 .Lout:   .skip OUT_CAP
 
@@ -93,66 +90,63 @@ _start:
     test eax, eax
     jz .Lusage_error
 .Lopen:
-    mov [rip + .Lmode], rcx
-    mov edi, -100                   # AT_FDCWD
-    mov rsi, [rsp + 24]
-    mov edx, 0x80800                # O_RDONLY | O_NONBLOCK | O_CLOEXEC
-    xor r10d, r10d
-.Lopen_retry:
-    mov eax, 257                    # openat
-    syscall
-    cmp rax, -4
-    je .Lopen_retry
-    test rax, rax
-    js .Linvalid
-    mov ebx, eax
-    sub rsp, 144                    # x86-64 Linux struct stat
-    mov edi, ebx
-    mov rsi, rsp
-.Lstat_retry:
-    mov eax, 5                      # fstat
-    syscall
-    cmp rax, -4
-    je .Lstat_retry
-    test rax, rax
-    js .Linvalid
-    mov eax, [rsp + 24]
-    and eax, 0xf000
-    cmp eax, 0x8000                 # regular file
-    jne .Linvalid
-    mov r13, [rsp + 48]
-    add rsp, 144
-    cmp r13, 14                     # magic, hash, nonempty path, NUL
-    jb .Linvalid
-    test r13, r13
-    js .Linvalid
-    xor edi, edi
-    mov rsi, r13
-    mov edx, 1                      # PROT_READ
-    mov r10d, 2                     # MAP_PRIVATE
-    mov r8d, ebx
-    xor r9d, r9d
-    mov eax, 9                      # mmap
-    syscall
-    cmp rax, -4095
-    jae .Linvalid
-    mov r12, rax                    # mapping start
-    add r13, rax                    # mapping end
-    mov edi, ebx
-    mov eax, 3                      # close
-    syscall
+    mov r15d, ecx
+    mov rdi, [rsp+24]
+    lea rsi, [rip+.Larchive]
+    lea rdx, [rip+.Larchive_size]
+    call mathlib_ltar_map
+    test eax, eax
+    jnz .Linvalid
 
-    # Check the full record framing and UTF-8 before reporting any result.
-    # The first pass also records matches without decoding or writing them.
-    mov r15d, MODE_CHECK
-    call .Lwalk
-    mov r15, [rip + .Lmode]
+    mov rdi, [rip+.Larchive]
+    mov rsi, [rip+.Larchive_size]
+    cmp r15d, MODE_LOOKUP
+    jae .Lfind_module
     cmp r15d, MODE_CAT
-    jae .Lhandle_payload
-    call .Lwalk
+    je .Lfind_member
+
+    # Validate the whole archive before emitting any list or comment output.
+    xor edx, edx
+    xor ecx, ecx
+    call mathlib_ltar_walk
+    test eax, eax
+    jnz .Linvalid
+    mov rdi, [rip+.Larchive]
+    mov rsi, [rip+.Larchive_size]
+    lea rdx, [rip+.Lprint_record]
+    mov ecx, r15d
+    call mathlib_ltar_walk
+    test eax, eax
+    jnz .Linvalid
     call .Lflush
     xor edi, edi
     jmp .Lexit
+
+.Lfind_module:
+    lea rdx, [rip+.Lselected_data]
+    lea rcx, [rip+.Lselected_size]
+    call mathlib_ltar_find_olean
+    cmp eax, -2
+    je .Lno_olean
+    cmp eax, -3
+    je .Lambiguous
+    test eax, eax
+    jnz .Linvalid
+    mov ebx, 1                         # LGZ
+    jmp .Lhandle_payload
+
+.Lfind_member:
+    lea rdx, [rip+.Lselect_exact]
+    mov rcx, [rip+.Larguments]
+    mov rcx, [rcx]
+    call mathlib_ltar_walk
+    test eax, eax
+    jnz .Linvalid
+    cmp qword ptr [rip+.Lmatch_count], 1
+    ja .Lambiguous
+    jb .Lno_match
+    mov ebx, [rip+.Lselected_kind]
+    jmp .Lhandle_payload
 
 .Lequal:
     mov al, [rdi]
@@ -168,115 +162,43 @@ _start:
     xor eax, eax
     ret
 
-# r12 = base, r13 = end, r14 = cursor. Each record retains its UTF-8
-# name (rbx, rbp) while the cursor advances over its content.
-.Lwalk:
-    lea r14, [r12 + 12]
-    cmp dword ptr [r12], 0x3252544c # LTR2
-    je .Ltrace_v2
-    cmp dword ptr [r12], 0x5241544c # LTAR
-    jne .Linvalid
-    call .Lread_text
-    test rbp, rbp
-    jz .Linvalid
-    mov qword ptr [rip + .Lkind], 4
-    mov qword ptr [rip + .Lstart], 4
-    mov qword ptr [rip + .Lsize], 8
-    jmp .Lmaybe_member
-.Ltrace_v2:
-    call .Lread_text
-    test rbp, rbp
-    jz .Linvalid
-    jmp .Lmember
-.Lnext_record:
-    cmp r14, r13
-    je .Lwalk_done
-    call .Lread_text
-    test rbp, rbp
-    jnz .Lmember
-    call .Lread_text                # empty path introduces a comment
-    cmp r15d, MODE_COMMENTS
-    jne .Lnext_record
-    mov rsi, rbx
-    mov rdx, rbp
-    call .Lput
-    call .Lnewline
-    jmp .Lnext_record
-.Lmember:
-    mov rcx, r13
-    sub rcx, r14
-    cmp rcx, 9                      # tag + eight-byte size or hash
-    jb .Linvalid
-    movzx eax, byte ptr [r14]
-    inc r14
-    cmp eax, 3
-    ja .Linvalid
-    mov [rip + .Lkind], rax
-    mov edx, 8
-    cmp eax, 2
-    jae .Lpayload
-    mov rdx, [r14]                  # compressed length
-    add r14, 8
-.Lpayload:
-    mov rax, r13
-    sub rax, r14
-    cmp rdx, rax
-    ja .Linvalid
-    mov rax, r14
-    sub rax, r12
-    mov [rip + .Lstart], rax
-    mov [rip + .Lsize], rdx
-    add r14, rdx
-.Lmaybe_member:
-    cmp qword ptr [rip + .Lmode], MODE_CAT
-    jae .Lselect_member
-    cmp r15d, MODE_LIST
-    jne .Lnext_record
-    mov rax, [rip + .Lkind]
-    lea rsi, [rip + .Lencodings]
-    movsxd rax, dword ptr [rsi + rax*4]
-    add rsi, rax
-    xor edx, edx
-.Lencoding_end:
-    inc rdx
-    cmp byte ptr [rsi + rdx], 0
-    jne .Lencoding_end
-    call .Lput
-    mov rax, [rip + .Lstart]
+# mathlib_ltar_walk callback(mode, kind, name, name_length, data, length).
+.Lprint_record:
+    cmp esi, 5
+    je .Lprint_comment
+    cmp edi, MODE_LIST
+    jne .Lprint_done
+    push rbx
+    push rbp
+    sub rsp, 24
+    mov rbx, rdx                       # path needed by .Lpath
+    mov rbp, rcx
+    sub r8, [rip+.Larchive]
+    mov [rsp], r8                      # stored payload offset
+    mov [rsp+8], r9
+    lea rdi, [rip+.Lencodings]
+    movsxd rsi, dword ptr [rdi+rsi*4]
+    add rsi, rdi
+    call .Lput_cstr
+    mov rax, [rsp]
     call .Ldecimal_tab
-    mov rax, [rip + .Lsize]
+    mov rax, [rsp+8]
     call .Ldecimal_tab
     call .Lpath
-    call .Lnewline
-    jmp .Lnext_record
-.Lwalk_done:
-    ret
-
-.Lread_text:
-    mov rcx, r13
-    sub rcx, r14
-    jz .Linvalid
-    mov rbx, r14
-    mov rdi, r14
-    xor eax, eax
-    repne scasb
-    jne .Linvalid
-    mov r14, rdi
-    lea rbp, [rdi - 1]
-    sub rbp, rbx
-    test r15d, r15d
-    jnz .Ltext_ok
-    push 0                          # byte position
-    push 0                          # scalar count
-    mov rdi, rbx
-    mov rsi, rbp
-    lea rdx, [rsp + 8]
-    mov rcx, rsp
-    call _ZN4lean13validate_utf8EPKhmRmS2_
-    add rsp, 16
-    test eax, eax
-    jz .Linvalid
-.Ltext_ok:
+    add rsp, 24
+    pop rbp
+    pop rbx
+    jmp .Lnewline
+.Lprint_comment:
+    cmp edi, MODE_COMMENTS
+    jne .Lprint_done
+    mov rsi, rdx
+    mov rdx, rcx
+    sub rsp, 8
+    call .Lput
+    add rsp, 8
+    jmp .Lnewline
+.Lprint_done:
     ret
 
 # Keep UTF-8 path text readable, escape field delimiters, ASCII controls

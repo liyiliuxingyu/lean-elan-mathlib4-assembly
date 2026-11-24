@@ -1,9 +1,9 @@
 BUILD_DIR ?= build
 
 .PHONY: all test test-run-proxy test-selection clean
-all: $(BUILD_DIR)/elan-asm-descriptor $(BUILD_DIR)/elan-asm-run $(BUILD_DIR)/elan-asm-proxy
+all: $(BUILD_DIR)/elan $(BUILD_DIR)/elan-asm-descriptor $(BUILD_DIR)/elan-asm-run $(BUILD_DIR)/elan-asm-proxy
 
-test: all $(BUILD_DIR)/test-toolchain-desc $(BUILD_DIR)/test-settings-default test-run-proxy test-selection
+test: all $(BUILD_DIR)/test-toolchain-desc $(BUILD_DIR)/test-settings-default test-run-proxy test-selection test-manager
 	$(BUILD_DIR)/test-settings-default
 	$(BUILD_DIR)/test-toolchain-desc
 
@@ -34,10 +34,14 @@ test-run-proxy: $(BUILD_DIR)/elan-asm-run $(BUILD_DIR)/test-run-probe
 	test "$$status" -eq 127; test ! -s "$$scratch/actual"; test -s "$$scratch/diagnostic"; \
 	printf '%s\n' 'elan local launcher tests passed'
 
+manager_objs := $(addprefix $(BUILD_DIR)/,manager.o toolchain_list.o toolchain_order.o path.o toolchain_desc.o selection_utf8.o)
+$(BUILD_DIR)/elan: $(manager_objs)
+	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
+
 $(BUILD_DIR)/elan-asm-descriptor: $(BUILD_DIR)/descriptor_cli.o $(BUILD_DIR)/toolchain_desc.o
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
 
-$(BUILD_DIR)/elan-asm-run: $(BUILD_DIR)/run_proxy.o $(BUILD_DIR)/toolchain_desc.o
+$(BUILD_DIR)/elan-asm-run: $(BUILD_DIR)/run_proxy.o $(BUILD_DIR)/toolchain_desc.o $(BUILD_DIR)/path.o
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
 
 $(BUILD_DIR)/proxy_entry.o: run_proxy.s | $(BUILD_DIR)
@@ -46,7 +50,7 @@ $(BUILD_DIR)/proxy_entry.o: run_proxy.s | $(BUILD_DIR)
 $(BUILD_DIR)/selection_utf8.o: ../lean4/utf8.s | $(BUILD_DIR)
 	$(AS) --64 $(ASFLAGS) -o $@ $<
 
-$(BUILD_DIR)/elan-asm-proxy: $(BUILD_DIR)/proxy_entry.o $(BUILD_DIR)/select_toolchain.o $(BUILD_DIR)/leanpkg_version.o $(BUILD_DIR)/settings_default.o $(BUILD_DIR)/toolchain_desc.o $(BUILD_DIR)/selection_utf8.o
+$(BUILD_DIR)/elan-asm-proxy: $(BUILD_DIR)/proxy_entry.o $(BUILD_DIR)/path.o $(BUILD_DIR)/select_toolchain.o $(BUILD_DIR)/leanpkg_version.o $(BUILD_DIR)/settings_default.o $(BUILD_DIR)/toolchain_desc.o $(BUILD_DIR)/selection_utf8.o
 	$(LD) -m elf_x86_64 $(LDFLAGS) -o $@ $^
 
 $(BUILD_DIR)/test-settings-default: $(BUILD_DIR)/test_settings_default.o $(BUILD_DIR)/settings_default.o $(BUILD_DIR)/toolchain_desc.o
@@ -65,6 +69,7 @@ $(BUILD_DIR):
 	mkdir -p $@
 
 clean:
+	$(RM) $(BUILD_DIR)/elan $(manager_objs)
 	$(RM) $(BUILD_DIR)/test-settings-default $(BUILD_DIR)/test_settings_default.o
 	$(RM) $(BUILD_DIR)/elan-asm-proxy $(BUILD_DIR)/proxy_entry.o $(BUILD_DIR)/select_toolchain.o
 	$(RM) $(BUILD_DIR)/leanpkg_version.o $(BUILD_DIR)/settings_default.o $(BUILD_DIR)/selection_utf8.o
@@ -139,3 +144,5 @@ test-selection: $(BUILD_DIR)/elan-asm-proxy $(BUILD_DIR)/test-run-probe
 	ln -s "$$root" ./relative-root; rm leanpkg.toml ../lean-toolchain; \
 	printf '[package]\nlean_version = "./relative-root"\n' > ../leanpkg.toml; check ././relative-root ././relative-root; \
 	printf '%s\n' 'elan local selection tests passed'
+
+include manager-tests.mk

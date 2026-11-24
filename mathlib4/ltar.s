@@ -1,15 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-# Read archive metadata using the leangz 0.1.15 LTAR / LTR2 wire format.
+# Read members and metadata using the leangz 0.1.15 LTAR / LTR2 wire format.
 .intel_syntax noprefix
+.include "olean_layout.inc"
 .equ MODE_CHECK, 0
 .equ MODE_COMMENTS, 1
 .equ MODE_LIST, 2
+.equ MODE_CAT, 3
+.equ MODE_LOOKUP, 4
+.equ MODE_TERM, 5
 .equ OUT_CAP, 8192
 
 .section .rodata
 .Lflag_comments: .asciz "-k"
 .Lflag_list:     .asciz "--list"
+.Lflag_cat:      .asciz "--cat"
+.Lflag_lookup:   .asciz "--lookup"
+.Lflag_term:     .asciz "--term"
 .Lusage:         .ascii "usage: mathlib-ltar {-k|--list} FILE.ltar\n"
+                 .ascii "       mathlib-ltar --cat FILE.ltar MEMBER\n"
+                 .ascii "       mathlib-ltar --lookup FILE.ltar NAME [NAME ...]\n"
+                 .ascii "       mathlib-ltar --term FILE.ltar THEOREM\n"
 .equ USAGE_LEN, . - .Lusage
 .Lbad_input:     .ascii "mathlib-ltar: invalid archive or unreadable input\n"
 .equ ERROR_LEN, . - .Lbad_input
@@ -41,7 +51,8 @@
 .type _start,@function
 _start:
     cmp qword ptr [rsp], 3
-    jne .Lusage_error
+    jb .Lusage_error
+    jne .Lpayload_arguments
     mov rdi, [rsp + 16]
     lea rsi, [rip + .Lflag_comments]
     call .Lequal
@@ -54,6 +65,33 @@ _start:
     test eax, eax
     jz .Lusage_error
     mov ecx, MODE_LIST
+    jmp .Lopen
+.Lpayload_arguments:
+    lea rax, [rsp + 32]
+    mov [rip + .Larguments], rax
+    mov rax, [rsp]
+    sub rax, 3
+    mov [rip + .Larg_count], rax
+    mov rdi, [rsp + 16]
+    lea rsi, [rip + .Lflag_lookup]
+    call .Lequal
+    mov ecx, MODE_LOOKUP
+    test eax, eax
+    jnz .Lopen
+    cmp qword ptr [rsp], 4
+    jne .Lusage_error
+    mov rdi, [rsp + 16]
+    lea rsi, [rip + .Lflag_cat]
+    call .Lequal
+    mov ecx, MODE_CAT
+    test eax, eax
+    jnz .Lopen
+    mov rdi, [rsp + 16]
+    lea rsi, [rip + .Lflag_term]
+    call .Lequal
+    mov ecx, MODE_TERM
+    test eax, eax
+    jz .Lusage_error
 .Lopen:
     mov [rip + .Lmode], rcx
     mov edi, -100                   # AT_FDCWD
@@ -105,10 +143,12 @@ _start:
     syscall
 
     # Check the full record framing and UTF-8 before reporting any result.
-    # Neither pass accesses the compressed payload bytes.
+    # The first pass also records matches without decoding or writing them.
     mov r15d, MODE_CHECK
     call .Lwalk
     mov r15, [rip + .Lmode]
+    cmp r15d, MODE_CAT
+    jae .Lhandle_payload
     call .Lwalk
     call .Lflush
     xor edi, edi
@@ -188,6 +228,8 @@ _start:
     mov [rip + .Lsize], rdx
     add r14, rdx
 .Lmaybe_member:
+    cmp qword ptr [rip + .Lmode], MODE_CAT
+    jae .Lselect_member
     cmp r15d, MODE_LIST
     jne .Lnext_record
     mov rax, [rip + .Lkind]
@@ -287,6 +329,11 @@ _start:
     sub rsp, 32
     lea rsi, [rsp + 31]
     mov byte ptr [rsi], 9
+    jmp .Ldigits
+.Ldecimal_text:
+    sub rsp, 32
+    lea rsi, [rsp + 32]
+.Ldigits:
     mov ecx, 10
 .Ldigit:
     xor edx, edx
@@ -359,12 +406,23 @@ _start:
     lea rsi, [rip + .Lbad_output]
     mov edx, OUTPUT_LEN
 .Lerror:
+    mov r8d, 2
+.Lreport:
     mov edi, 2
     mov eax, 1
     syscall
-    mov edi, 2
+    cmp rax, -4
+    je .Lreport
+    test rax, rax
+    jle .Lreported
+    add rsi, rax
+    sub rdx, rax
+    jnz .Lreport
+.Lreported:
+    mov edi, r8d
 .Lexit:
     mov eax, 60
     syscall
+.include "ltar_payload.inc"
 .size _start,.-_start
 .section .note.GNU-stack,"",@progbits

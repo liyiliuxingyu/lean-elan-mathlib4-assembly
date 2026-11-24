@@ -9,7 +9,6 @@
 .equ SYS_MMAP, 9
 .equ SYS_EXECVE, 59
 .equ SYS_EXIT, 60
-.equ SYS_GETCWD, 79
 .equ ERR_EINTR, -4
 .equ ERR_ENOENT, -2
 .equ ERR_ENOTDIR, -20
@@ -55,7 +54,7 @@ _start:
     and     rsp, -16
 
     mov     rdi, r12
-    call    .Lstrlen
+    call    elan_strlen
     mov     rsi, rax
     lea     rdx, [rip+.Ldesc]
     call    elan_parse_resolved
@@ -118,46 +117,22 @@ _start:
 
 .Lparse_recursion:
     mov     rsi, [rip+.Lenv_values+ENV_RECURSION*8]
-    call    .Lread_u32
+    call    elan_read_u32
     cmp     eax, 5
     ja      .Lrecursion_limit
     add     al, '1'
     mov     [rip+.Lrecursion_digit], al
 
-    xor     r8d, r8d
-    mov     rbx, [rip+.Lenv_values+ENV_ELAN_HOME*8]
-    test    rbx, rbx
-    jnz     .Lhome_input
-    mov     rbx, [rip+.Lenv_values+ENV_HOME*8]
-    test    rbx, rbx
-    jz      .Lmissing_home
-    cmp     byte ptr [rbx], 0
+    mov     rdi, [rip+.Lenv_values+ENV_ELAN_HOME*8]
+    mov     rsi, [rip+.Lenv_values+ENV_HOME*8]
+    lea     rdx, [rip+.Lhome]
+    call    elan_home_path
+    cmp     eax, 1
     je      .Lmissing_home
-    mov     r8d, 1                  /* append .elan to HOME */
-.Lhome_input:
-    lea     rdi, [rip+.Lhome]
-    lea     rdx, [rip+.Lhome+PATH_CAPACITY]
-    mov     rsi, rbx
-    cmp     byte ptr [rbx], '/'
-    je      .Lcopy_home
-    mov     esi, PATH_CAPACITY
-    mov     eax, SYS_GETCWD
-    syscall
-    test    rax, rax
-    js      .Lbad_cwd
-    lea     rdi, [rdi+rax-1]       /* getcwd length includes NUL */
-    mov     rsi, rbx
-    call    .Ljoin_component
-    jmp     .Lhome_suffix
-.Lcopy_home:
-    call    .Lappend_z
-.Lhome_suffix:
-    jc      .Ltoo_long
-    test    r8d, r8d
-    jz      .Lhome_ready
-    lea     rsi, [rip+.Ldot_elan]
-    call    .Ljoin_component
-    jc      .Ltoo_long
+    cmp     eax, 2
+    je      .Lbad_cwd
+    test    eax, eax
+    jnz     .Ltoo_long
 
 .Lhome_ready:
 .ifdef AUTO_SELECT
@@ -178,15 +153,15 @@ _start:
     cmp     dword ptr [rip+.Ldesc], 3
     jne     .Linstalled_toolchain
     mov     rsi, r12
-    call    .Lappend_z
+    call    elan_append_z
     jc      .Ltoo_long
     jmp     .Lprogram_bin
 .Linstalled_toolchain:
     lea     rsi, [rip+.Lhome]
-    call    .Lappend_z
+    call    elan_append_z
     jc      .Ltoo_long
     lea     rsi, [rip+.Ltoolchains]
-    call    .Ljoin_component
+    call    elan_join_component
     jc      .Ltoo_long
     /* Existing directory name encoding: / becomes -- and : becomes ---. */
     cmp     rdi, rdx
@@ -194,38 +169,14 @@ _start:
     mov     byte ptr [rdi], '/'
     inc     rdi
     mov     rsi, r12
-.Lencode_descriptor:
-    cmp     rdi, rdx
-    jae     .Ltoo_long
-    lodsb
-    cmp     al, '/'
-    je      .Lencode_pair
-    cmp     al, ':'
-    je      .Lencode_triple
-    mov     [rdi], al
-    test    al, al
-    jz      .Lprogram_bin
-    inc     rdi
-    jmp     .Lencode_descriptor
-.Lencode_triple:
-    mov     byte ptr [rdi], '-'
-    inc     rdi
-    cmp     rdi, rdx
-    jae     .Ltoo_long
-.Lencode_pair:
-    mov     byte ptr [rdi], '-'
-    inc     rdi
-    cmp     rdi, rdx
-    jae     .Ltoo_long
-    mov     byte ptr [rdi], '-'
-    inc     rdi
-    jmp     .Lencode_descriptor
+    call    elan_append_encoded
+    jc      .Ltoo_long
 .Lprogram_bin:
     lea     rsi, [rip+.Lbin]
-    call    .Ljoin_component
+    call    elan_join_component
     jc      .Ltoo_long
     mov     rsi, r15
-    call    .Ljoin_component
+    call    elan_join_component
     jc      .Ltoo_long
     cmp     byte ptr [rip+.Lhas_extension], 0
     jne     .Lbuild_home_env
@@ -256,17 +207,17 @@ _start:
     lea     rdi, [rip+.Lhome_env]
     lea     rdx, [rip+.Lhome_env+PATH_CAPACITY+10]
     lea     rsi, [rip+.Lkey_elan_home]
-    call    .Lappend_z
+    call    elan_append_z
     lea     rsi, [rip+.Lhome]
-    call    .Lappend_z
+    call    elan_append_z
     jc      .Ltoo_long
 
     lea     rdi, [rip+.Ltoolchain_env]
     lea     rdx, [rip+.Ltoolchain_env+PATH_CAPACITY+15]
     lea     rsi, [rip+.Lkey_toolchain]
-    call    .Lappend_z
+    call    elan_append_z
     mov     rsi, r12
-    call    .Lappend_z
+    call    elan_append_z
     jc      .Ltoo_long
 
     /* Rust's join_paths rejects a search entry containing a colon. */
@@ -280,19 +231,19 @@ _start:
     lea     rdi, [rip+.Lpath_env]
     lea     rdx, [rip+.Lpath_env+ENV_PATH_CAPACITY]
     lea     rsi, [rip+.Lkey_path]
-    call    .Lappend_z
+    call    elan_append_z
     lea     rsi, [rip+.Lhome]
-    call    .Lappend_z
+    call    elan_append_z
     jc      .Ltoo_long
     lea     rsi, [rip+.Lbin]
-    call    .Ljoin_component
+    call    elan_join_component
     jc      .Ltoo_long
     mov     rsi, [rip+.Lenv_values+ENV_PATH*8]
     test    rsi, rsi
     jz      .Lbuild_env_vector
     mov     byte ptr [rdi], ':'
     inc     rdi
-    call    .Lappend_z
+    call    elan_append_z
     jc      .Ltoo_long
 
 .Lbuild_env_vector:
@@ -419,54 +370,6 @@ _start:
     syscall
 .size _start, .-_start
 
-.ifdef AUTO_SELECT
-/* Shared bounded path/string operations used by the selection front end. */
-.globl elan_strlen, elan_join_component, elan_append_z
-.set elan_strlen, .Lstrlen
-.set elan_join_component, .Ljoin_component
-.set elan_append_z, .Lappend_z
-.endif
-
-/* rdi = NUL-terminated input; rax = length. */
-.Lstrlen:
-    xor     eax, eax
-.Lstrlen_byte:
-    cmp     byte ptr [rdi+rax], 0
-    je      .Lstrlen_done
-    inc     rax
-    jmp     .Lstrlen_byte
-.Lstrlen_done:
-    ret
-
-/* Append a NUL-terminated component, adding a separator when needed. */
-.Ljoin_component:
-    cmp     byte ptr [rsi], 0
-    je      .Lappend_z
-    cmp     byte ptr [rdi-1], '/'
-    je      .Lappend_z
-    cmp     rdi, rdx
-    jae     .Lappend_full
-    mov     byte ptr [rdi], '/'
-    inc     rdi
-/* rdi = destination cursor; rsi = source; rdx = destination bound.
- * On success rdi points to the terminating NUL and CF is clear.
- */
-.Lappend_z:
-    cmp     rdi, rdx
-    jae     .Lappend_full
-    lodsb
-    mov     [rdi], al
-    test    al, al
-    jz      .Lappend_done
-    inc     rdi
-    jmp     .Lappend_z
-.Lappend_done:
-    clc
-    ret
-.Lappend_full:
-    stc
-    ret
-
 /* rdi = environment string; eax = key number or -1; rdx = value. */
 .Lenvironment_entry:
     mov     r8, rdi
@@ -488,35 +391,7 @@ _start:
     mov     rdx, rdi
     ret
 
-/* Optional + followed by decimal digits in u32 range. Invalid input is 0. */
-.Lread_u32:
-    xor     eax, eax
-    test    rsi, rsi
-    jz      .Lu32_done
-    cmp     byte ptr [rsi], '+'
-    jne     .Lu32_digit
-    inc     rsi
-.Lu32_digit:
-    movzx   ecx, byte ptr [rsi]
-    test    ecx, ecx
-    jz      .Lu32_done
-    sub     ecx, '0'
-    cmp     ecx, 9
-    ja      .Lu32_invalid
-    imul    rax, rax, 10
-    add     rax, rcx
-    mov     rcx, rax
-    shr     rcx, 32
-    jnz     .Lu32_invalid
-    inc     rsi
-    jmp     .Lu32_digit
-.Lu32_invalid:
-    xor     eax, eax
-.Lu32_done:
-    ret
-
 .section .rodata
-.Ldot_elan:   .asciz ".elan"
 .Ltoolchains: .asciz "toolchains"
 .Lbin:        .asciz "bin"
 

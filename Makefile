@@ -5,7 +5,7 @@ runtime := $(output)/lean4
 elan_out := $(output)/elan
 mathlib_out := $(output)/mathlib4
 runtime_objects := $(runtime)/hash.o $(runtime)/utf8.o \
-	$(runtime)/utf8-extra.o $(runtime)/utf8-libcxx.o $(runtime)/kernel-data.o
+	$(runtime)/utf8-extra.o $(runtime)/utf8-libcxx.o $(runtime)/kernel-data.o $(runtime)/expr-app.o
 runtime_tests := $(runtime)/hash-test $(runtime)/utf8-test $(runtime)/utf8-extra-test $(runtime)/kernel-data-test
 
 .DELETE_ON_ERROR:
@@ -54,3 +54,5 @@ include lean4/oracle.mk
 
 .PHONY: test-upstream
 test-upstream: test-lean test-kernel-oracle
+
+include lean4/expr-app.mk

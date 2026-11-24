@@ -10,7 +10,7 @@ cache_term := $(BUILD_DIR)/olean_term.o $(BUILD_DIR)/olean_term_data.o
 cache_test := $(BUILD_DIR)/olean_test.o
 
 .PHONY: all test test-lean test-cache test-graph test-term
-all: $(BUILD_DIR)/selftest $(BUILD_DIR)/export-lean $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/mathlib-ltar
+all: $(BUILD_DIR)/selftest $(BUILD_DIR)/export-lean $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/mathlib-ltar $(BUILD_DIR)/mathlib-lgz
 
 $(BUILD_DIR):
 	mkdir -p "$@"
@@ -138,7 +138,15 @@ test-batch: $(BUILD_DIR)/mathlib-olean
 $(BUILD_DIR)/ltar-utf8.o: ../lean4/utf8.s | $(BUILD_DIR)
 	$(AS) --64 $(ASFLAGS) -o "$@" "$<"
 
-$(BUILD_DIR)/mathlib-ltar: $(BUILD_DIR)/ltar.o $(BUILD_DIR)/ltar-utf8.o
+include lgz-test.mk
+include zstd-test.mk
+
+test: test-lgz test-zstd
+
+$(BUILD_DIR)/ltar.o: ltar_payload.inc olean_layout.inc
+$(BUILD_DIR)/ltar_zstd_stream.o: zstd.inc
+
+$(BUILD_DIR)/mathlib-ltar: $(BUILD_DIR)/ltar.o $(BUILD_DIR)/ltar_zstd_stream.o $(BUILD_DIR)/ltar-utf8.o $(cache_reader) $(cache_term) $(lgz_objects) $(zstd_objects) $(BUILD_DIR)/zstd_dict.o
 	$(LD) $(LDFLAGS) -o "$@" $^
 
 .PHONY: test-ltar
@@ -158,3 +166,7 @@ test-ltar: $(BUILD_DIR)/mathlib-ltar $(BUILD_DIR)/ltar_fixture.o
 	done; done; printf '%s\n' 'ltar metadata tests passed'
 
 include metadata-test.mk
+
+include ltar-payload-test.mk
+
+include ltar-corpus-test.mk

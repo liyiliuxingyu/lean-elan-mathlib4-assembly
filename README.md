@@ -1,12 +1,12 @@
 # Lean 4、Elan、Mathlib4 汇编移植
 
-这是三个项目的第五阶段汇编移植源码包。目标是 Linux x86-64、ELF 和 System V AMD64 ABI。实现与自测采用 GNU `as` 的 Intel 汇编语法。Makefile 负责组装、链接和运行测试。
+这是三个项目的第六阶段汇编移植源码包。目标是 Linux x86-64、ELF 和 System V AMD64 ABI。实现与自测采用 GNU `as` 的 Intel 汇编语法。Makefile 负责组装、链接和运行测试。
 
 | 项目 | 此版本实现 | 上游基线 |
 | --- | --- | --- |
-| Lean 4 | `hash_str` 和 `src/runtime/utf8.cpp` 的全部 19 个公开符号，另含 8 个 Expr 和 4 个 Level 原生访问器。 | [v4.19.0 · 6caaee842e94](https://github.com/leanprover/lean4/tree/6caaee842e9495688c1567e78c0e68dbb96942aa/src/runtime) |
-| Elan | 解析工具链描述符和目录名，可从参数、环境、项目文件和本机设置选择已安装工具链并启动命令。 | [v4.2.4 · 227caca13372](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs) |
-| Mathlib4 | 将 `Nat.succ_injective` 表示为汇编数据，提供汇编证明检查器和 Lean 证明导出程序。直接查询编译好的 `.olean`，可沿导入遍历、批量索引声明、导出定理的类型、证明和元数据。还能直接列出 `.ltar` 缓存的成员和版本注释。 | [v4.19.0 · c44e0c8ee63c](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55) |
+| Lean 4 | `hash_str` 和 `src/runtime/utf8.cpp` 的全部 19 个公开符号，另含 8 个 Expr 和 4 个 Level 数据访问器，以及函数应用链的 8 个定义、13 个原生入口。 | [v4.19.0 · 6caaee842e94](https://github.com/leanprover/lean4/tree/6caaee842e9495688c1567e78c0e68dbb96942aa/src/runtime) |
+| Elan | 解析工具链描述符和目录名，可从参数、环境、项目文件和本机设置选择已安装工具链并启动命令，支持列举工具链和链接本地构建。 | [v4.2.4 · 227caca13372](https://github.com/leanprover/elan/blob/227caca133724d5516bee25c2aeb3e609478f2d8/src/elan-dist/src/dist.rs) |
+| Mathlib4 | 将 `Nat.succ_injective` 表示为汇编数据，提供汇编证明检查器和 Lean 证明导出程序。直接查询编译好的 `.olean`，可沿导入遍历、批量索引声明、导出定理的类型、证明和元数据。可直接从 `.ltar` 压缩缓存查声明、读证明或输出指定成员。 | [v4.19.0 · c44e0c8ee63c](https://github.com/leanprover-community/mathlib4/blob/c44e0c8ee63ca166450922a373c7409c5d26b00b/Mathlib/Data/Nat/Basic.lean#L55) |
 
 ## 构建与验证
 
@@ -17,20 +17,32 @@ make
 make test
 ```
 
-`make` 生成 `build/lean4/liblean-asm-runtime.a`、`build/elan/elan-asm-descriptor`、`build/elan/elan-asm-run`、`build/mathlib4/export-lean`、`build/elan/elan-asm-proxy`、`build/mathlib4/mathlib-olean` 和 `build/mathlib4/mathlib-ltar`。
+构建产物按项目存放在 `build/{lean4,elan,mathlib4}/`。其中包括 Lean 汇编静态库、本地工具链管理器、启动代理、证明导出程序，以及读取 `.ltar`、LGZ 流和 `.olean` 的三个命令。
 
 ```sh
 build/elan/elan-asm-descriptor parse leanprover/lean4:v4.19.0
 build/elan/elan-asm-descriptor dir leanprover--lean4---v4.19.0
 build/elan/elan-asm-run /path/to/lean-4.19.0-linux lean --version
 build/elan/elan-asm-proxy lean +/path/to/lean-4.19.0-linux --version
+build/elan/elan toolchain list
 build/mathlib4/export-lean
 make test-upstream LEAN=/path/to/lean-4.19.0-linux/bin/lean
 build/mathlib4/mathlib-ltar --list /path/to/cache.ltar
+# 以下两条命令使用 Mathlib/Data/Set/Defs 对应的归档
+build/mathlib4/mathlib-ltar --lookup SetDefs.ltar Set.ext
+build/mathlib4/mathlib-ltar --term SetDefs.ltar Set.ext
 build/mathlib4/mathlib-olean --term /path/to/Mathlib/Data/Nat/Basic.olean Nat.succ_injective
 ```
 
-`make test` 运行独立的汇编测试。`make test-lean` 需要官方 Lean v4.19.0。它把证明证书转换为 Lean 源码，再由官方 Lean 检查该命题的证明。`make test-upstream` 还会用系统链接驱动和官方 Lean 动态库分别链接对照程序，逐行比较 12 个原生访问器的返回值、引用计数及心跳计数。
+`make test` 运行独立的汇编测试。`make test-lean` 需要官方 Lean v4.19.0。它把证明证书转换为 Lean 源码，再由官方 Lean 检查该命题的证明。`make test-upstream` 还会用系统链接驱动和官方 Lean 动态库分别链接对照程序，逐行比较 12 个原生数据访问器和 13 个应用链入口的结果。
+
+## 第六阶段
+
+- **Mathlib4 压缩缓存**。`mathlib-ltar --lookup` 和 `--term` 在内存中还原选中的模块，`--cat` 可输出指定成员。13 份真实缓存的 91 个成员都与 leantar 0.1.15 解包结果逐字节相同。官方 Lean 枚举的 1,804 个声明和额外 13 次缺失查询均符合预期，61 个定理导出的 5,292 行类型和证明记录与读取已解包模块的结果一致。[命令和格式](mathlib4/LTAR.md) · [LGZ 对象重建](mathlib4/lgz.md)
+- **Lean 4**。新增查找函数头、统计和收集参数、按上限剥离函数应用等 8 个定义，共 13 个 ABI 入口。用官方 v4.19.0 在 97 组对象图上逐入口对照，1,261 条记录一致。生成数组、处理大自然数和释放引用仍调用 Lean 运行时。[应用链入口与验证](lean4/EXPR-APP.md)
+- **Elan**。`elan toolchain link NAME PATH` 注册已有的本地工具链，`elan toolchain list` 按上游规则列举。65 个场景的标准输出、标准错误、退出状态与目录状态均与 Elan v4.2.4 一致。其中一项对 1,548 个名称排序。[本地工具链管理](elan/MANAGER.md)
+
+这批缓存共有 39 个 Zstandard 帧、70 个压缩块。汇编解码结果与系统 libzstd 逐字节一致。Zstandard 字典沿用 leangz v0.1.15 的 486,250 字节静态数据，以汇编数据指令保存。缓存命令和本地 Elan 命令均静态链接。热缓存单核测试中，从压缩包导出 `Set.ext` 的中位耗时为 1.832 ms，先强制解包再查为 8.429 ms，查询已有 `.olean` 为 0.257 ms。真实缓存的下载标识、校验和、声明核对及测速方法见[真实缓存验证记录](mathlib4/LTAR-CORPUS.md)。
 
 ## 第五阶段新增能力
 

@@ -45,8 +45,21 @@ _start:
     mov ecx, OFFSET FLAT:.Lrecursive_option_length
     repe cmpsb
     je .Lrecursive
+    mov rsi, [rsp + 16]
+    lea rdi, [rip + .Lterm_option]
+    mov ecx, OFFSET FLAT:.Lterm_option_length
+    repe cmpsb
+    je .Lterm_arguments
     mov rsi, [rsp + 16]     # Path.
     lea rbx, [rsp + 24]     # Next name argument.
+    jmp .Lfile_arguments
+.Lterm_arguments:
+    cmp r13, 2
+    jne .Lterm_usage_error
+    mov r13, -1             # A single theorem query with expression output.
+    mov rsi, [rsp + 24]
+    lea rbx, [rsp + 32]
+.Lfile_arguments:
     and rsp, -16
     sub rsp, stack_size
 
@@ -101,6 +114,39 @@ _start:
     call mathlib_olean_parse
     cmp eax, 1
     jne .Lcache_error
+    cmp r13, -1
+    jne .Lregular_mode
+    mov rdi, rsp
+    mov rsi, [rbx]
+    lea rdx, [rsp + VIEW_BYTES]
+    call mathlib_olean_lookup
+    cmp eax, 1
+    je .Lterm_found
+    test eax, eax
+    js .Lquery_result_error
+    mov r13d, 1
+    jmp .Lmissing
+.Lterm_found:
+    cmp qword ptr [rsp + VIEW_BYTES + RESULT_KIND], 2
+    jne .Lnot_theorem_error
+    mov rdi, rsp
+    mov rsi, [rsp + VIEW_BYTES + RESULT_TYPE]
+    mov rdx, [rsp + VIEW_BYTES + RESULT_PROOF]
+    call mathlib_olean_dump_term
+    test eax, eax
+    jz .Lfinish
+    cmp eax, -2
+    je .Loutput_error
+    cmp eax, -3
+    je .Lworkspace_error
+    lea rsi, [rip + .Lterm_data_message]
+    mov edx, OFFSET FLAT:.Lterm_data_message_len
+    jmp .Lreport_error
+.Lquery_result_error:
+    cmp eax, -1
+    je .Lquery_error
+    jmp .Lcache_error
+.Lregular_mode:
     test r13, r13
     jz .Lsummary
 
@@ -258,6 +304,14 @@ _start:
 .Lusage_error:
     lea rsi, [rip + .Lusage_message]
     mov edx, OFFSET FLAT:.Lusage_message_len
+    jmp .Lreport_error
+.Lterm_usage_error:
+    lea rsi, [rip + .Lterm_usage_message]
+    mov edx, OFFSET FLAT:.Lterm_usage_message_len
+    jmp .Lreport_error
+.Lnot_theorem_error:
+    lea rsi, [rip + .Lnot_theorem_message]
+    mov edx, OFFSET FLAT:.Lnot_theorem_message_len
     jmp .Lreport_error
 .Lrecursive_usage_error:
     lea rsi, [rip + .Lrecursive_usage_message]
@@ -437,6 +491,9 @@ OLEAN_STRING .Ldeclarations_prefix, "declarations\t"
 OLEAN_STRING .Limports_prefix, "imports\t"
 .Lnewline:
     .byte 10
+.Lterm_option:
+    .asciz "--term"
+.equ .Lterm_option_length, . - .Lterm_option
 .Lrecursive_option:
     .asciz "--recursive"
 .equ .Lrecursive_option_length, . - .Lrecursive_option
@@ -445,6 +502,9 @@ OLEAN_STRING .Limports_prefix, "imports\t"
 .equ .Llean_path_prefix_length, . - .Llean_path_prefix
 
 OLEAN_STRING .Lusage_message, "usage: mathlib-olean FILE.olean [QUALIFIED_NAME ...]\n"
+OLEAN_STRING .Lterm_usage_message, "usage: mathlib-olean --term FILE.olean QUALIFIED_THEOREM\n"
+OLEAN_STRING .Lnot_theorem_message, "mathlib-olean: --term requires a theorem declared in this file\n"
+OLEAN_STRING .Lterm_data_message, "mathlib-olean: invalid or unsupported cached term data\n"
 OLEAN_STRING .Lrecursive_usage_message, "usage: mathlib-olean --recursive FILE.olean QUALIFIED_NAME [...]\n"
 OLEAN_STRING .Lopen_message, "mathlib-olean: cannot open cache (check the path and permissions)\n"
 OLEAN_STRING .Lbad_file_message, "mathlib-olean: cache must be a readable regular file\n"
@@ -453,7 +513,7 @@ OLEAN_STRING .Lcache_message, "mathlib-olean: incompatible or malformed cache (e
 OLEAN_STRING .Lquery_message, "mathlib-olean: invalid qualified name (expected nonempty dot-separated components)\n"
 OLEAN_STRING .Ldependency_message, "mathlib-olean: cannot read required cache (check the root path and LEAN_PATH)\n"
 OLEAN_STRING .Ldependency_prefix, "mathlib-olean: cannot read required cache (check LEAN_PATH): "
-OLEAN_STRING .Lworkspace_message, "mathlib-olean: recursive search exceeded a path or workspace limit\n"
+OLEAN_STRING .Lworkspace_message, "mathlib-olean: path or workspace limit reached\n"
 OLEAN_STRING .Loutput_message, "mathlib-olean: failed to write output\n"
 
 .section .note.GNU-stack,"",@progbits

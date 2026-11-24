@@ -6,16 +6,17 @@ objects := $(BUILD_DIR)/verify.o $(BUILD_DIR)/nat_succ_injective.o
 cache_reader := $(BUILD_DIR)/olean_read.o
 cache_cli := $(BUILD_DIR)/olean_cli.o
 cache_graph := $(BUILD_DIR)/olean_graph.o $(BUILD_DIR)/olean_search_path.o
+cache_term := $(BUILD_DIR)/olean_term.o $(BUILD_DIR)/olean_term_data.o
 cache_test := $(BUILD_DIR)/olean_test.o
 
-.PHONY: all test test-lean test-cache test-graph
+.PHONY: all test test-lean test-cache test-graph test-term
 all: $(BUILD_DIR)/selftest $(BUILD_DIR)/export-lean $(BUILD_DIR)/mathlib-olean
 
 $(BUILD_DIR):
 	mkdir -p "$@"
 
 $(objects) $(BUILD_DIR)/selftest.o $(BUILD_DIR)/export_lean.o: proof_format.inc
-$(cache_reader) $(cache_cli) $(cache_test) $(BUILD_DIR)/olean_graph.o: olean_layout.inc
+$(cache_reader) $(cache_cli) $(cache_test) $(cache_term) $(BUILD_DIR)/olean_graph.o: olean_layout.inc
 
 $(BUILD_DIR)/%.o: %.s | $(BUILD_DIR)
 	$(AS) --64 -I . $(ASFLAGS) -o "$@" "$<"
@@ -26,13 +27,13 @@ $(BUILD_DIR)/selftest: $(objects) $(BUILD_DIR)/selftest.o
 $(BUILD_DIR)/export-lean: $(objects) $(BUILD_DIR)/export_lean.o
 	$(LD) $(LDFLAGS) -o "$@" $^
 
-$(BUILD_DIR)/mathlib-olean: $(cache_cli) $(cache_reader) $(cache_graph)
+$(BUILD_DIR)/mathlib-olean: $(cache_cli) $(cache_reader) $(cache_graph) $(cache_term)
 	$(LD) $(LDFLAGS) -o "$@" $^
 
 $(BUILD_DIR)/olean-test: $(cache_test) $(cache_reader)
 	$(LD) $(LDFLAGS) -o "$@" $^
 
-test-cache: $(BUILD_DIR)/olean-test test-graph
+test-cache: $(BUILD_DIR)/olean-test test-graph test-term
 	"$(BUILD_DIR)/olean-test"
 
 test-graph: $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/olean_graph_fixture.o
@@ -59,6 +60,28 @@ test-graph: $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/olean_graph_fixture.o
 	LEAN_PATH="$$shadow" "$$reader" --recursive "$$root" cacheTestRoot > "$$scratch/result"; \
 	printf 'axiom\tcacheTestRoot\n' | cmp - "$$scratch/result"; \
 	printf '%s\n' 'olean graph tests passed'
+
+$(BUILD_DIR)/olean-term-data-test: $(BUILD_DIR)/olean_term_data_test.o $(BUILD_DIR)/olean_term_data.o
+	$(LD) $(LDFLAGS) -o "$@" $^
+
+$(BUILD_DIR)/olean_term_data_test.o: olean_layout.inc
+
+test-term: $(BUILD_DIR)/mathlib-olean $(BUILD_DIR)/olean_graph_fixture.o $(BUILD_DIR)/olean-term-data-test
+	"$(BUILD_DIR)/olean-term-data-test"
+	@set -eu; \
+	scratch=$$(mktemp -d); \
+	trap 'rm -rf -- "$$scratch"' EXIT; \
+	$(OBJCOPY) -O binary -j .graph_term "$(BUILD_DIR)/olean_graph_fixture.o" "$$scratch/Term.olean"; \
+	"$(BUILD_DIR)/mathlib-olean" --term "$$scratch/Term.olean" cacheTestTerm > "$$scratch/output"; \
+	awk -F '\t' 'NR == 1 { if ($$1 != "type" || $$2 <= 0) exit 1; t = $$2 } \
+		NR == 2 { if ($$1 != "proof" || $$2 <= 0) exit 1; p = $$2 } \
+		NR == 3 { if ($$1 != "expr" || $$2 != t || $$3 != "const" || $$4 != "True" || $$5 != 0) exit 1 } \
+		NR == 4 { if ($$1 != "expr" || $$2 != p || $$3 != "const" || $$4 != "True.intro" || $$5 != 0) exit 1 } \
+		END { if (NR != 4) exit 1 }' "$$scratch/output"; \
+	$(OBJCOPY) -O binary -j .graph_term_cycle "$(BUILD_DIR)/olean_graph_fixture.o" "$$scratch/Cycle.olean"; \
+	if "$(BUILD_DIR)/mathlib-olean" --term "$$scratch/Cycle.olean" cacheTestTermCycle \
+		> "$$scratch/output" 2> "$$scratch/error"; then exit 1; else test "$$?" -eq 2; fi; \
+	printf '%s\n' 'olean term tests passed'
 
 test: $(BUILD_DIR)/selftest test-cache
 	"$(BUILD_DIR)/selftest"

@@ -95,6 +95,16 @@ mathlib_olean_parse:
     ret
 .size mathlib_olean_parse, . - mathlib_olean_parse
 
+# Public checked translation for readers of typed cached objects.
+.globl mathlib_olean_object
+.type mathlib_olean_object, @function
+# rdi = view, rsi = serialized pointer, rdx = minimum byte length.
+mathlib_olean_object:
+    mov rax, rsi
+    mov r10, rdx
+    jmp .Lpointer
+.size mathlib_olean_object, .-mathlib_olean_object
+
 # rdi = view, rax = serialized pointer, r10 = required length.
 # Returns rax = mapped pointer or 0; clobbers rcx only besides rax.
 .Lpointer:

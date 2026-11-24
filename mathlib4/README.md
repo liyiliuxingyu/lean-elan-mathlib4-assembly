@@ -66,3 +66,32 @@ lake env /path/to/build/mathlib4/mathlib-olean --recursive \
 也可直接设置冒号分隔的 `LEAN_PATH`。包根选择遵循 Lean 4.19.0 的规则，搜索路径中第一个包含顶级包目录或该包 `.olean` 的条目决定后续模块的位置，空条目表示当前目录。手动设置时，标准库所在的 `$(lean --print-prefix)/lib/lean` 也应在列表内。查询不会构建 Lean 环境，内核证明检查仍由官方 Lean 完成。[Lean 搜索路径](https://github.com/leanprover/lean4/blob/6caaee842e9495688c1567e78c0e68dbb96942aa/src/Lean/Util/Path.lean#L46)
 
 `make -C mathlib4 test-cache` 同时测试单文件数据读取和递归查询。递归测试包含共享叶节点、缺失的仅运行时导入、包路径优先级和提前命中。实现上限为 65,536 个排队模块、16 MiB 模块路径数据和 4,095 字节单路径。当前可读版本为官方 Linux x86-64 Lean 4.19.0 发行版生成的缓存。
+
+
+## 导出定理类型与证明表达式
+
+`--term` 导出一个当前文件声明的定理。入口遵循 `.olean` 查询的版本约束。表格用制表符分隔，第一行的 `type` 和第二行的 `proof` 给出各自根节点的文件字节偏移。后续每个节点只输出一次，偏移可用来追踪引用关系。
+
+```sh
+build/mathlib4/mathlib-olean --term /path/to/Mathlib/Data/Nat/Basic.olean Nat.succ_injective
+```
+
+| 记录 | 构造器 | 偏移和构造器后的字段 |
+| --- | --- | --- |
+| `expr` | `bvar` | de Bruijn 索引 |
+| `expr` | `fvar`、`mvar` | 变量名 |
+| `expr` | `sort` | 宇宙层级偏移 |
+| `expr` | `const` | 常量名、宇宙层级列表偏移 |
+| `expr` | `app` | 函数偏移、参数偏移 |
+| `expr` | `lam`、`forallE` | 绑定名、类型偏移、主体偏移、绑定方式 |
+| `expr` | `letE` | 绑定名、类型偏移、值偏移、主体偏移、非依赖标志 |
+| `expr` | `lit` | `nat` 或 `string`、相应字面量 |
+| `expr` | `mdata` | 元数据表偏移、表达式偏移 |
+| `expr` | `proj` | 结构名、字段索引、被投影表达式偏移 |
+| `level` | `succ`、`max`、`imax` | 一个或两个宇宙层级偏移 |
+| `level` | `param`、`mvar` | 层级参数或元变量名 |
+| `levels` | `cons` | 首项层级偏移、尾部列表偏移 |
+
+宇宙零层级、空宇宙列表和空元数据表各以对应字段中的 `0` 表示。绑定方式依次用 `0`、`1`、`2`、`3` 表示显式、隐式、严格隐式和实例隐式。自然数输出十进制。字符串和名称中的控制字节以 `\xNN` 表示。定理的类型、证明、子表达式和宇宙数据均从映射中读取。元数据表只保留原偏移。内部引用的定理常量保留名称，证明类型检查和常量展开仍由 Lean 负责。[固定版表达式定义](https://github.com/leanprover/lean4/blob/6caaee842e9495688c1567e78c0e68dbb96942aa/src/Lean/Expr.lean)
+
+生成的每行最长 16 KiB。找不到当前文件中的定理时返回 `1`，非定理、格式错误、超过行长上限或 I/O 错误返回 `2`。`make -C mathlib4 test-term` 使用随包的汇编缓存夹具检查导出、非法循环引用和标量数据。

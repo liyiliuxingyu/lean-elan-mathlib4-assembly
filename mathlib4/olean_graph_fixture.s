@@ -50,7 +50,7 @@
     graph_name \id, .Limport_name_\id\()_\module, .Limport_text_\id\()_\module, .Lpackage_\id
 .endm
 
-.macro graph_image section, decl, count, dep0, dep1, runtime
+.macro graph_image section, decl, count, dep0, dep1, runtime, theorem=0
     .section \section,"a",@progbits
     .balign 8
     .equ .Lgraph_base_\@, 0x1234000000 + 65536 * \@
@@ -96,23 +96,54 @@
 .Lconstants_\@:
     graph_header 246, 0, 1
     .quad 1, 1
-    graph_pointer \@, .Laxiom_\@
+    graph_pointer \@, .Lconstant_info_\@
 
-.Laxiom_\@:
-    graph_header 0, 1, 16
-    graph_pointer \@, .Laxiom_val_\@
+.Lconstant_info_\@:
+    .if \theorem
+        graph_header 2, 1, 16      # ConstantInfo.thmInfo
+        graph_pointer \@, .Ltheorem_val_\@
+.Ltheorem_val_\@:
+        graph_header 0, 3, 32
+        graph_pointer \@, .Lconstant_val_\@
+        graph_pointer \@, .Lproof_\@
+        .quad 1                    # Empty mutual declaration list
+    .else
+        graph_header 0, 1, 16
+        graph_pointer \@, .Laxiom_val_\@
 .Laxiom_val_\@:
-    graph_header 0, 1, 24
-    graph_pointer \@, .Lconstant_val_\@
-    .quad 0                        # isUnsafe = false with padding
+        graph_header 0, 1, 24
+        graph_pointer \@, .Lconstant_val_\@
+        .quad 0                    # isUnsafe = false with padding
+    .endif
 .Lconstant_val_\@:
     graph_header 0, 3, 32
     graph_pointer \@, .Ldeclaration_\@
     .quad 1                        # Empty universe parameter list
     graph_pointer \@, .Ltype_\@
 .Ltype_\@:
-    graph_header 3, 1, 24          # Expr.sort Level.zero
-    .quad 1, 0
+    .if \theorem
+        graph_header 4, 2, 32      # Expr.const True []
+        graph_pointer \@, .Ltrue_name_\@
+        .quad 1, 0
+.Lproof_\@:
+        .if \theorem == 2
+            graph_header 5, 2, 32  # Invalid Expr.app with a self-edge.
+            graph_pointer \@, .Lproof_\@
+            graph_pointer \@, .Ltype_\@
+            .quad 0
+        .else
+            graph_header 4, 2, 32  # Expr.const True.intro []
+            graph_pointer \@, .Lintro_name_\@
+            .quad 1, 0
+        .endif
+        graph_string .Ltrue_text_\@, True
+        graph_name \@, .Ltrue_name_\@, .Ltrue_text_\@
+        graph_string .Lintro_text_\@, intro
+        graph_name \@, .Lintro_name_\@, .Lintro_text_\@, .Ltrue_name_\@
+    .else
+        graph_header 3, 1, 24      # Expr.sort Level.zero
+        .quad 1, 0
+    .endif
 
     graph_string .Ldecl_text_\@, \decl
     graph_name \@, .Ldeclaration_\@, .Ldecl_text_\@
@@ -135,5 +166,7 @@ graph_image .graph_root, cacheTestRoot, 3, Left, Right, UnavailableRuntime
 graph_image .graph_left, cacheTestLeft, 1, Leaf
 graph_image .graph_right, cacheTestRight, 1, Leaf
 graph_image .graph_leaf, cacheTestLeaf, 0
+graph_image .graph_term, cacheTestTerm, 0, , , , 1
+graph_image .graph_term_cycle, cacheTestTermCycle, 0, , , , 2
 
 .section .note.GNU-stack,"",@progbits
